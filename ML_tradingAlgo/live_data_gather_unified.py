@@ -1,3 +1,4 @@
+import sys
 import requests
 import pandas as pd
 import json
@@ -6,9 +7,19 @@ import time
 import numpy as np
 import tda
 from tda import auth, client
-from config import TD_AMERITRADE_CLIENT_ID as client_id
+from config import TD_AMERITRADE_CLIENT_ID as client_id, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, BROKERAGE_ACCOUNT_ID, WHATSAPP_FROM, WHATSAPP_TO
 from TD_Ameritrade_Data import arrange_fundamentals
-#from Todd_tradingAlgo import Todd_predict
+from Todd_tradingAlgo1 import Todd_predict
+
+#Sets client for SMS messaging
+from twilio.rest import Client
+twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+#money to spend per trade
+trade_amount = 25
+
+# Instance ID determines CSV filename (e.g. DataToPredict1.csv, DataToPredict2.csv)
+instance_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
 
 
 def main():
@@ -24,6 +35,24 @@ def main():
     Market_open = int(Market_open)
     running = True
     runningPremarket = True
+    end_time = Market_open + 10800
+
+
+    #GETS PREVIOUS DAY CLOSE
+    endpointHist = r"https://api.tdameritrade.com/v1/marketdata/{}/pricehistory".format(ticker)
+
+    #define payload
+    payloadHist = {'apikey': client_id, 'periodType': 'day', 'period': '1', 'frequencyType': 'minute', 'frequency': '30', 'needExtendedHoursData' : 'false'} #need to be able to set time period
+
+    #make a request
+    contentHist = requests.get(url = endpointHist, params = payloadHist)
+
+    dataHist = contentHist.json()
+    dataHist = json.dumps(dataHist)
+    stockData = pd.read_json(dataHist)
+
+    previous_day_close = stockData['candles'].iloc[-1]['close']
+
 
     oneMinContent = []
     fiveMinContent = []
@@ -68,7 +97,7 @@ def main():
     floatShares = arrange_fundamentals(ticker)[2]
     print(floatShares)
 
-    sleep_seconds = 1.8
+    sleep_seconds = 1.4
 
 
     #The vibe check for preMarket
@@ -85,7 +114,7 @@ def main():
             stockData = pd.read_json(quote)
             print(stockData[ticker]['lastPrice'])
             stockPrice = stockData[ticker]['lastPrice']
-            
+
         except Exception:
             print("Error. Something wrong in the pandas import. Keep trying?")
 
@@ -106,9 +135,21 @@ def main():
     start_time_oneMin = int(time.time())
     start_time_fiveMin = int(time.time())
 
+    bought = False
+
+    sold1 = False
+    sold2 = False
+    sold3 = False
+    noted1 = False
+    noted2 = False
+    noted3 = False
+
     #Gathers data
     while running == True:
-        
+
+        if time.time() > end_time:
+            running = False
+
         current_time_oneMin = int(time.time()) - start_time_oneMin
         current_time_fiveMin = int(time.time()) - start_time_fiveMin
         print(current_time_oneMin)
@@ -116,14 +157,14 @@ def main():
 
         time.sleep(sleep_seconds)
 
-        
+
         try:
             r = c.get_quote(ticker)
             quote = json.dumps(r.json())
             stockData = pd.read_json(quote)
             print(stockData[ticker]['lastPrice'])
             stockPrice = stockData[ticker]['lastPrice']
-            
+
         except Exception:
             print("Error. Something wrong in the pandas import. Keep trying?")
 
@@ -131,7 +172,7 @@ def main():
 
 
         #adds to the main data
-        
+
         oneMinContent.append(stockPrice)
         fiveMinContent.append(stockPrice)
 
@@ -142,8 +183,15 @@ def main():
             candle_low = min(oneMinContent)
             candle_open = oneMinContent[0]
             candle_close = oneMinContent[-1]
-            candle_volume = stockData[ticker]['totalVolume'] - start_vol
-            
+            try:
+                candle_volume = stockData[ticker]['totalVolume'] - start_vol
+            except Exception:
+                print("error getting candle volume")
+                try:
+                    candle_volume = stockData[ticker]['totalVolume'] - start_vol
+                except Exception:
+                    candle_volume = 1
+
 
             #adds data to lists
             temp_OneMinCandle.append(candle_open)
@@ -154,6 +202,14 @@ def main():
 
             all_OneMinCandles.append(temp_OneMinCandle)
             print(all_OneMinCandles)
+
+
+            #cancel if stock falls too low
+            currentCandleOpen = all_OneMinCandles[-1][0]
+
+            percent_change = (currentCandleOpen - previous_day_close) / previous_day_close * 100
+            if percent_change <= 10:
+                running = False
 
             #resets the candle
             oneMinContent = []
@@ -168,7 +224,14 @@ def main():
             candle_low_5min = min(fiveMinContent)
             candle_open_5min = fiveMinContent[0]
             candle_close_5min = fiveMinContent[-1]
-            candle_volume_5min = stockData[ticker]['totalVolume'] - start_vol_5min
+            try:
+                candle_volume_5min = stockData[ticker]['totalVolume'] - start_vol_5min
+            except Exception:
+                print("failure for 5min, trying again.")
+                try:
+                    candle_volume_5min = stockData[ticker]['totalVolume'] - start_vol_5min
+                except Exception:
+                    print("failed")
 
             #adds data to lists
             temp_FiveMinCandle.append(candle_open_5min)
@@ -189,7 +252,7 @@ def main():
 
 
             #HERE BEGETS THE ARRANGING OF INFORMATION: BEGIN!
-            if len(all_FiveMinCandles) >= 8:
+            if len(all_FiveMinCandles) >= 8 and bought == False and time.time() < (end_time - 900):
 
                 #Gets daily high
                 daily_highs = []
@@ -205,20 +268,147 @@ def main():
 
 
                 #get 52 week data and ratios
-                fiftyTwo_week_high = stockData[ticker]['52WkHigh']
-                fiftyTwo_week_low = stockData[ticker]['52WkLow']
-                high52ratio = 1 - stockPrice / fiftyTwo_week_high
-                low52ratio = 1 - fiftyTwo_week_low / stockPrice
+                try:
+                    fiftyTwo_week_high = stockData[ticker]['52WkHigh']
+                    fiftyTwo_week_low = stockData[ticker]['52WkLow']
+                    high52ratio = 1 - stockPrice / fiftyTwo_week_high
+                    low52ratio = 1 - fiftyTwo_week_low / stockPrice
+                    stock_data = arrange_from_live(all_FiveMinCandles, all_OneMinCandles, floatShares,high52ratio,low52ratio, ratio_premarketHigh, ratio_premarketLow, daily_high_ratio, daily_low_ratio)
+                    write_to_csv_for_prediction(stock_data)
+                except Exception:
+                    print("problem importing")
 
-                #HERE IS WHERE PREDICTIONS HAPPEN
-                stock_data = arrange_from_live(all_FiveMinCandles, all_OneMinCandles, floatShares,high52ratio,low52ratio, ratio_premarketHigh, ratio_premarketLow, daily_high_ratio, daily_low_ratio)
-                write_to_csv_for_prediction(stock_data)
 
+
+                #here is where the algo makes a prediction
+                prediction1, prediction2 = Todd_predict()
+                prediction1 = prediction1[0][0]
+                prediction2 = prediction2[0][0]
+                print("PREDICTION: ")
+                if prediction1 == 1 and prediction2 == 1:
+                    prediction = 1
+                    print(prediction)
+                else:
+                    prediction = 0
+                    print(prediction)
+                #This is where the buy occurs
+                if prediction == 1:
+                    bought = True
+                    buy_price = stockPrice
+                    buy_time = int(time.time())
+                    buyTime_since_open = (buy_time - Market_open) / 60
+                    sms_text = "Todd just bought " + str(ticker) + " for " + str(buy_price) + " at " + str(time.time())
+                    message = twilio_client.messages.create(
+                        body=sms_text,
+                        from_=WHATSAPP_FROM,
+                        to=WHATSAPP_TO)
+
+                    #organizes the buy amount
+                    buy_quantity = round(trade_amount/stockPrice)
+                    buy_remainder = 2 - (buy_quantity % 2)
+                    buy_quantity += buy_remainder
+
+                    #places trade
+                    account_id = BROKERAGE_ACCOUNT_ID
+                    x = tda.orders.equities.equity_buy_market(ticker, buy_quantity)
+                    r_place_order = c.place_order(account_id, x)
+
+
+        #All following code pertains to the sell mechanism - includes a trailing stop loss of 1%
+        if bought == False:
+            stop_loss_set = False
+            begin_stoploss_trail = False
+            stop_loss_trail = -2.5
+        if bought == True:
+            try:
+                assert r_place_order.ok, r_place_order.raise_for_status()
+                order_id = tda.utils.Utils(client, account_id).extract_order_id(r_place_order)
+            except Exception:
+                print("order did not go through (normally not enough money in account)")
+        if bought == True:
+            percent_change = (stockPrice - buy_price) / buy_price * 100
+            print("percent change")
+            print(percent_change)
+
+            time_since_bought = (int(time.time()) - buy_time) / 60
+
+
+            if time_since_bought > 15:
+                profit = (stockPrice - buy_price)
+                sold1 = True
+                sold2 = True
+
+            begin_stoploss_trail = True
+
+            if begin_stoploss_trail == True:
+                stop_loss_trail = max(stop_loss_trail, (percent_change - 2.5))
+                if percent_change <= stop_loss_trail:
+                    profit = (stockPrice - buy_price)
+                    sold1 = True
+
+            if percent_change <= -2:
+                profit = (stockPrice - buy_price)
+                sold2 = True
+
+            if percent_change >= 3:
+                profit = (stockPrice - buy_price)
+                sold2 = True
+
+
+
+        if sold1 == True and noted1 == False:
+            print("profit equals: ", profit)
+            filename = 'trade_history.txt'
+            time_since_open = (int(time.time()) - Market_open) / 60
+            to_write = str(ticker) + " " + str(profit) + "Time Bought: " + str(buyTime_since_open) +  " Time Sold: " + str(time_since_bought) + " Percent: " + str(percent_change) + " SOLD 2" + "\n"
+            with open(filename, "a") as file:
+                file.write(to_write)
+            noted1 = True
+
+            sms_text = "Todd just sold " + str(ticker) + " for a percent change of " + str(percent_change) + " SOLD 2"
+            message = twilio_client.messages.create(
+                body=sms_text,
+                from_=WHATSAPP_FROM,
+                to=WHATSAPP_TO)
+
+            #sell code
+            sell_quantity = buy_quantity/2
+            account_id = BROKERAGE_ACCOUNT_ID
+            x = tda.orders.equities.equity_sell_market(ticker, sell_quantity)
+            r_place_order = c.place_order(account_id, x)
+
+        if sold2 == True and noted2 == False:
+            print("profit equals: ", profit)
+            filename = 'trade_history.txt'
+            time_since_open = (int(time.time()) - Market_open) / 60
+            to_write = str(ticker) + " " + str(profit) + "Time Bought: " + str(buyTime_since_open) +  " Time Sold: " + str(time_since_bought) + " Percent: " + str(percent_change) + " SOLD 3" + "\n"
+            with open(filename, "a") as file:
+                file.write(to_write)
+            noted2 = True
+
+            sms_text = "Todd just sold " + str(ticker) + " for a percent change of " + str(percent_change) + " SOLD 3"
+            message = twilio_client.messages.create(
+                body=sms_text,
+                from_=WHATSAPP_FROM,
+                to=WHATSAPP_TO)
+
+            #sell code
+            sell_quantity = buy_quantity/2
+            account_id = BROKERAGE_ACCOUNT_ID
+            x = tda.orders.equities.equity_sell_market(ticker, sell_quantity)
+            r_place_order = c.place_order(account_id, x)
+
+        if sold1 == True and sold2 == True:
+            bought = False
+            sold1 = False
+            sold2 = False
+            noted1 = False
+            noted2 = False
 
 
 
 def arrange_from_live(fiveMinCandlesList, oneMinCandlesList, float_volume, high52ratio, low52ratio, ratio_premarketHigh, ratio_premarketLow, daily_high_ratio, daily_low_ratio):
-    
+
 
     fiveMinData = pd.DataFrame({"goodNews": [],"Earnings": [],"52highRatio": [], "52lowRatio": [],"preMarket_high_ratio":[],"premarket_low_ratio":[],"ratioToDailyHigh":[],"ratioToDailyLow":[],"5min8":[],"5min8Unweighted":[],"5min8Squar":[],"5min7":[],"5min7Unweighted":[],"5min7Squar":[],"5min6":[],"5min6Unweighted":[],"5min6Squar":[],"5min5":[],"5min5Unweighted":[],"5min5Squar":[],"5min4":[],"5min4Unweighted":[],"5min4Squar":[],"5min3":[],"5min3Unweighted":[],"5min3Squar":[],"5min2":[],"5min2Unweighted":[],"5min2Squar":[],"5min1":[],"5min1Unweighted":[],"5min1Squar":[],"1min5":[],"1min5Unweighted":[],"1min5Squar":[],"1min4":[],"1min4Unweighted":[],"1min4Squar":[],"1min3":[],"1min3Unweighted":[],"1min3Squar":[],"1min2":[],"1min2Unweighted":[],"1min2Squar":[],"1min1":[],"1min1Unweighted":[],"1min1Squar":[]})
 
@@ -233,7 +423,13 @@ def arrange_from_live(fiveMinCandlesList, oneMinCandlesList, float_volume, high5
         feature_vol = cande_feature[4]
 
 
-        feature = (((feature_close - feature_low) - (feature_high - feature_close))/feature_open * 1000) * (feature_vol/float_volume*100)
+        try:
+            feature = (((feature_close - feature_low) - (feature_high - feature_close))/feature_open * 1000) * (feature_vol/float_volume*100)
+        except Exception:
+            try:
+                feature = (((feature_close - feature_low) - (feature_high - feature_close))/feature_open * 1000) * (feature_vol/float_volume*100)
+            except Exception:
+                feature = 0
         feature_unweighted = (((feature_close - feature_low) - (feature_high - feature_close))/feature_open * 1000)
         feature_squared = feature ** 2
 
@@ -249,7 +445,7 @@ def arrange_from_live(fiveMinCandlesList, oneMinCandlesList, float_volume, high5
         feature_low = cande_feature[2]
         feature_close = cande_feature[3]
         feature_vol = cande_feature[4]
-        
+
         feature = (((feature_close - feature_low) - (feature_high - feature_close))/feature_open * 1000) * (feature_vol/float_volume*100)
         feature_unweighted = (((feature_close - feature_low) - (feature_high - feature_close))/feature_open * 1000)
         feature_squared = feature ** 2
@@ -257,10 +453,10 @@ def arrange_from_live(fiveMinCandlesList, oneMinCandlesList, float_volume, high5
         fiveMinFeats.append(feature)
         fiveMinFeats.append(feature_unweighted)
         fiveMinFeats.append(feature_squared)
-    
+
     earnings = 0
     good_news = 1
-    
+
     fiveMinFeats.insert(0,daily_low_ratio)
     fiveMinFeats.insert(0,daily_high_ratio)
     fiveMinFeats.insert(0,ratio_premarketLow)
@@ -277,7 +473,7 @@ def arrange_from_live(fiveMinCandlesList, oneMinCandlesList, float_volume, high5
 
 
 def write_to_csv_for_prediction(fiveMinData):
-    filename = 'DataToPredict.csv'
+    filename = f'DataToPredict{instance_id}.csv'
     with open(filename, 'w') as file:
         fiveMinData.to_csv(file)
 

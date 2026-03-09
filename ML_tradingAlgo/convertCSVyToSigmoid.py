@@ -44,6 +44,7 @@ def main():
         filename_weekly = 'past_two_weekstrainDataSigmoid.csv'
     else:
         filename = 'crossValSigmoid.csv'
+        filename_weekly = 'crossValSigmoid_weekly.csv'
     
     add_to_training_data(SigmoidData, filename)
     add_to_training_data(SigmoidData_weekly, filename_weekly)

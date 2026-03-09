@@ -52,7 +52,7 @@ def main():
     print("trainableDataSigmoid_balanced_test.csv")
     print("For total data: ")
     for multiples in range(round(timesToMultiply-3)):
-        data = data.append(positives, ignore_index = True)
+        data = pd.concat([data, positives], ignore_index=True)
     print("length of final list:")
     print(len(data['y_list']))
     print()
@@ -63,7 +63,7 @@ def main():
     print("Total Length")
     print(len(data_past2weeks['y_list']))
     for multiples in range(round(timesToMultiply_weekly-3)):
-        data_past2weeks = data_past2weeks.append(positives_weekly, ignore_index = True)
+        data_past2weeks = pd.concat([data_past2weeks, positives_weekly], ignore_index=True)
 
     print("length of final list:")
     print(len(data_past2weeks['y_list']))

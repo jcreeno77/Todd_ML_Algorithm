@@ -5,7 +5,7 @@ import json
 import os
 from tda import auth, client
 import tda
-from TDAmConfig import client_id
+from config import TD_AMERITRADE_CLIENT_ID as client_id
 from selenium import webdriver
 from webdriver_manager.chrome import ChromeDriverManager
 

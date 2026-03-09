@@ -3,11 +3,10 @@ import pandas as pd
 import json
 import os
 import time
-from TDAmConfig import client_id
+from config import TD_AMERITRADE_CLIENT_ID as client_id
 import addDataFromLog as dataLog
 import convertCSVyToSigmoid as ccsvts
 import BalanceDataSigmoid as BDS
-import upload_csv_toAWS_s3 as U_s3
 
 
 
@@ -18,8 +17,7 @@ def main():
     ccsvts.main()
     #runs balance data automatically
     BDS.main()
-    #uploads files
-    U_s3.main()
+    # TODO: re-add S3 upload when module is recreated
     
 
 
@@ -88,7 +86,7 @@ def interactive_data_adding():
                     same_day = False
             else:
                 repeat = False
-        except:
+        except Exception:
             print("Problem... could be a few reasons... Usually no float identified.")
             
 
@@ -198,7 +196,7 @@ def arrange_Hist(fiveMinDataFrame, oneMinDataFrame, ext_hrs_data, fundamentals, 
     try:
         ratio_premarketHigh = 1 - stockOpen/premarket_high
         ratio_premarketLow = 1 - premarket_low/stockOpen
-    except:
+    except Exception:
         print("Ratio for premarket data is trying to divide by zero. As in it cannot request premarket data.")
         ratio_premarketHigh = None
         ratio_premarketLow = None
@@ -221,15 +219,15 @@ def arrange_Hist(fiveMinDataFrame, oneMinDataFrame, ext_hrs_data, fundamentals, 
             rowVolume = row['volume']
             
             feature = (((rowClose - rowLow) - (rowHigh - rowClose))/rowOpen * 1000) * (rowVolume/float_volume*100)
-            feature_unweighted = (((rowClose - rowLow) - (rowHigh - rowClose))/rowOpen * 100)
+            feature_unweighted = (((rowClose - rowLow) - (rowHigh - rowClose))/rowOpen * 1000)
             feature_squared = feature**2
-        
-        
+
+
             fiveMinFeats.append(feature)
             fiveMinFeats.append(feature_unweighted)
-            fiveMinFeats.append(feature_squared)       
-            
-        
+            fiveMinFeats.append(feature_squared)
+
+
         #obtains 1 minute candle features
         for o in range(round(i*five_to_one_minRatio) + round(five_to_one_minRatio) -5, round(i*five_to_one_minRatio) + round(five_to_one_minRatio)):
             rowOneMin = oneMinDataFrame['candles'][o]
@@ -239,7 +237,7 @@ def arrange_Hist(fiveMinDataFrame, oneMinDataFrame, ext_hrs_data, fundamentals, 
             rowLow = rowOneMin['low']
             rowVolume = rowOneMin['volume']
             feature = (((rowClose - rowLow) - (rowHigh - rowClose))/rowOpen * 1000) * (rowVolume/float_volume*100)
-            feature_unweighted = (((rowClose - rowLow) - (rowHigh - rowClose))/rowOpen * 100)
+            feature_unweighted = (((rowClose - rowLow) - (rowHigh - rowClose))/rowOpen * 1000)
             feature_squared = feature**2
 
             fiveMinFeats.append(feature)
@@ -278,7 +276,7 @@ def arrange_Hist(fiveMinDataFrame, oneMinDataFrame, ext_hrs_data, fundamentals, 
             fiveMinFeats.insert(0,earnings)
             fiveMinFeats.insert(0,good_news)
             new_row = pd.Series(fiveMinFeats, index = fiveMinData.columns)
-            fiveMinData = fiveMinData.append(new_row, ignore_index = True)  #append data rows
+            fiveMinData = pd.concat([fiveMinData, new_row.to_frame().T], ignore_index=True)  #append data rows
 
         
         

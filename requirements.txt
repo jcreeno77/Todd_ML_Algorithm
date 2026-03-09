@@ -1,0 +1,10 @@
+torch>=2.0
+numpy
+pandas>=1.3,<3.0
+requests
+tda-api
+twilio
+python-dotenv
+selenium
+webdriver-manager
+chromedriver-py
