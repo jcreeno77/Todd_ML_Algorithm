@@ -8,7 +8,7 @@ Replace the legacy 3-layer feedforward PyTorch model and the planned LSTM+Attent
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Feature set | Merged legacy 47 + spec's 42 | TFT's Variable Selection Network auto-prunes weak features |
+| Feature set | Merged legacy + spec features (55 total) | TFT's Variable Selection Network auto-prunes weak features |
 | Sequence format | 1-min bars as temporal sequence + 5-min aggregates as aligned observed inputs | Preserves multi-timeframe signal; TFT handles mixed-frequency natively |
 | Output heads | P(win) sigmoid + entry price offset linear | Probability enables threshold tuning; offset enables limit order placement |
 | Historical data | Polygon.io for training, Schwab for live | Polygon has years of 1-min bars; clean separation of concerns |
@@ -105,50 +105,104 @@ This removes ~40% of standard TFT complexity.
 | 7 | 52wk_low_ratio | Legacy: `1 - low52/close` | Raw |
 | 8 | premarket_range | Legacy: `high_ratio + low_ratio` | Raw |
 
-### Temporal Observed Features (35 per 1-min bar)
+### Temporal Observed Features (38 per 1-min bar)
 
 **Price Action (8):**
-OHLC normalized to VWAP, ATR-normalized range, candle body ratio (body/total range), upper wick ratio, lower wick ratio.
+
+| # | Feature |
+|---|---------|
+| 1 | open / VWAP |
+| 2 | high / VWAP |
+| 3 | low / VWAP |
+| 4 | close / VWAP |
+| 5 | ATR-normalized range |
+| 6 | candle body ratio (body / total range) |
+| 7 | upper wick ratio |
+| 8 | lower wick ratio |
 
 **Volume Profile (8):**
-Log volume, relative volume vs 20-day avg, volume vs 5/10/20 EMAs, cumulative volume ratio (vs expected for time of day), volume-price trend (VPT), OBV slope.
+
+| # | Feature |
+|---|---------|
+| 9 | log(volume) |
+| 10 | relative volume vs 20-day avg |
+| 11 | volume / 5-bar EMA |
+| 12 | volume / 10-bar EMA |
+| 13 | volume / 20-bar EMA |
+| 14 | cumulative volume ratio (vs expected for time of day) |
+| 15 | volume-price trend (VPT) |
+| 16 | OBV slope |
 
 **VWAP Dynamics (5):**
-Price distance from VWAP (normalized), VWAP slope, VWAP touches in last N bars, time since last VWAP cross, VWAP reclaim flag.
+
+| # | Feature |
+|---|---------|
+| 17 | price distance from VWAP (ATR-normalized) |
+| 18 | VWAP slope (5-bar) |
+| 19 | VWAP touches in last 10 bars |
+| 20 | bars since last VWAP cross |
+| 21 | VWAP reclaim flag (boolean: price crossed above VWAP from below) |
 
 **Momentum Indicators (8):**
-RSI(14), MACD line, MACD histogram, MACD histogram acceleration, ROC(5), ROC(10), stochastic %K, Williams %R.
+
+| # | Feature |
+|---|---------|
+| 22 | RSI(14) |
+| 23 | MACD line |
+| 24 | MACD histogram |
+| 25 | MACD histogram acceleration (1-bar delta) |
+| 26 | ROC(5) |
+| 27 | ROC(10) |
+| 28 | stochastic %K |
+| 29 | Williams %R |
 
 **Market Context (4):**
-SPY session return, SPY RSI, sector ETF return, VIX level (inverted, normalized).
+
+| # | Feature |
+|---|---------|
+| 30 | SPY session return |
+| 31 | SPY RSI(14) |
+| 32 | sector ETF return (mapped via sector_id) |
+| 33 | VIX level (inverted, normalized) |
 
 **Other (2):**
-Money flow index, consecutive green/red candle count.
+
+| # | Feature |
+|---|---------|
+| 34 | money flow index |
+| 35 | consecutive green/red candle count (positive = green, negative = red) |
 
 **Legacy Core Signal (3):**
-- Candle pressure weighted: `(((close-low)-(high-close))/open*1000) * (vol/float*100)`
-- Candle pressure unweighted: same formula without volume weighting
-- Candle pressure squared: squared variant for magnitude capture
+
+| # | Feature | Formula |
+|---|---------|---------|
+| 36 | candle pressure weighted | `(((close-low)-(high-close))/open*1000) * (vol/float*100)` |
+| 37 | candle pressure unweighted | `(((close-low)-(high-close))/open*1000)` |
+| 38 | candle pressure squared | `feature_36 ** 2` |
 
 *(The `* 1000` scaling factor from legacy must be preserved for consistency.)*
 
 ### 5-Min Aggregate Observed Features (9 per timestamp)
 
-Aligned to 1-min sequence — populated at every 5th bar, forward-filled for intervening bars:
+5-min bars are fetched separately from the data source (not aggregated from 1-min bars), aligned to clock time starting at market open (9:30, 9:35, 9:40, ...). At each 1-min timestep, the most recent completed 5-min bar's features are used (forward-filled until the next 5-min bar completes).
 
 | # | Feature | Notes |
 |---|---------|-------|
-| 1 | 5-min candle pressure weighted | Legacy formula |
-| 2 | 5-min candle pressure unweighted | Legacy formula |
-| 3 | 5-min candle pressure squared | Legacy formula |
-| 4 | 5-min OHLC range normalized | |
-| 5 | 5-min relative volume | |
-| 6 | 5-min VWAP distance | |
-| 7 | 5-min RSI | |
+| 1 | 5-min candle pressure weighted | Legacy formula (feature 36 applied to 5-min candle) |
+| 2 | 5-min candle pressure unweighted | Legacy formula (feature 37 applied to 5-min candle) |
+| 3 | 5-min candle pressure squared | Legacy formula (feature 38 applied to 5-min candle) |
+| 4 | 5-min OHLC range normalized | (high - low) / ATR |
+| 5 | 5-min relative volume | 5-min volume / 20-day avg 5-min volume |
+| 6 | 5-min VWAP distance | ATR-normalized |
+| 7 | 5-min RSI(14) | |
 | 8 | 5-min MACD histogram | |
 | 9 | 5-min OBV slope | |
 
-### Total: 8 static + 44 temporal (35 one-min + 9 five-min) = 52 input features
+### Total: 8 static + 47 temporal (38 one-min + 9 five-min) = 55 input features
+
+### Input Normalization
+
+All continuous features are z-score normalized using training set statistics (mean/std computed per walk-forward fold's training split). Normalization stats are saved alongside model weights and reused at inference. The categorical feature (`sector_id`) is excluded from normalization and handled via embedding.
 
 ---
 
@@ -164,7 +218,7 @@ Aligned to 1-min sequence — populated at every 5th bar, forward-filled for int
 ### Labeling
 
 - **Binary label (y_win):** Did the trade hit +3% take profit before -3% stop loss using the split-exit logic? 1 = yes, 0 = no. For trades that neither hit TP nor SL within the window, use the proportional formula from legacy: `y = (|SL| + pct_gain) / (TP + |SL|)`, binarized at 0.5.
-- **Entry offset label (y_offset):** Optimal entry price offset within the first 30 bars post-warmup, computed as the price that would have maximized the trade's return.
+- **Entry offset label (y_offset):** The percentage distance from bar-0 open to the lowest low within the first 30 bars, normalized by ATR: `y_offset = (lowest_low_30bars - bar0_open) / ATR`. This represents the best available entry price in hindsight. At inference, the predicted offset is applied to the current price to set a limit order below market. Units are ATR-normalized percentages (typically -2.0 to 0.0, where 0.0 means enter at current price).
 
 ### Walk-Forward Validation
 
@@ -183,14 +237,16 @@ Fold 4: [========== Train (months 1-17) ==========][= Val (month 18) =][= Test (
 L = 0.7 * BCE(P_win, y_win) + 0.3 * MSE(entry_offset, y_offset)
 ```
 
-Sample weights use exponential recency decay: `w_i = exp(-lambda * age_months_i)` where lambda is tuned so events 12+ months old have ~0.5x weight relative to recent events. This replaces the dual-model consensus approach.
+Sample weights use exponential recency decay: `w_i = exp(-lambda * age_months_i)` where `lambda = ln(2)/12 ≈ 0.0578` (events 12 months old get 0.5x weight, 24 months get 0.25x). Lambda can be tuned via validation performance; the default is derived from the half-life formula. This replaces the dual-model consensus approach.
+
+**Class balancing:** Apply class-weighted BCE where the positive class weight = `n_negative / n_positive`. This is combined multiplicatively with the recency weights. The legacy pipeline used oversampling (`BalanceDataSigmoid.py`); class-weighted loss achieves the same effect without duplicating samples, which is preferable for TFT since duplicate sequences would bias the attention mechanism.
 
 ### Training Configuration
 
 | Parameter | Value |
 |-----------|-------|
 | Optimizer | AdamW |
-| Learning rate | 1e-3 with cosine annealing |
+| Learning rate | 1e-3 with cosine annealing (higher than project spec's 1e-4; TFT's gating and layer norm stabilize training at higher LR, and cosine annealing decays it smoothly) |
 | Early stopping | Patience 15 epochs on validation loss |
 | Batch size | 64 |
 | Gradient clipping | Max norm 1.0 |
@@ -198,7 +254,7 @@ Sample weights use exponential recency decay: `w_i = exp(-lambda * age_months_i)
 
 ### Interpretability Outputs
 
-- **Feature importance:** Global VSN weights — ranked list of which of the 52 features matter most
+- **Feature importance:** Global VSN weights — ranked list of which of the 55 features matter most
 - **Temporal attention:** Per-prediction heatmap showing which of the 30 bars drove the decision
 - **Regime monitoring:** Track attention weight distribution over time; flag when recent predictions concentrate attention differently than historical baseline
 
@@ -213,7 +269,7 @@ ML_tradingAlgo/
 ├── config.py                        # Add Polygon API key, Schwab creds
 ├── tft/
 │   ├── model.py                     # TFT architecture (GRN, VSN, attention, output heads)
-│   ├── features.py                  # Feature engineering pipeline (52 features)
+│   ├── features.py                  # Feature engineering pipeline (55 features)
 │   ├── dataset.py                   # PyTorch Dataset for temporal sequences
 │   ├── train.py                     # Training loop with walk-forward validation
 │   └── interpret.py                 # Attention/feature importance visualization
@@ -232,14 +288,22 @@ Legacy files (`Todd_tradingAlgo1.py`, `TD_Ameritrade_Data.py`, etc.) remain unto
 `tft_predictor.py` exposes:
 
 ```python
-def predict(sequence: np.ndarray, static_features: np.ndarray) -> tuple[float, float]:
+def predict(
+    sequence: np.ndarray,
+    static_continuous: np.ndarray,
+    static_categorical: np.ndarray,
+) -> tuple[float, float]:
     """
     Args:
-        sequence: (30, 44) array of temporal features (1-min + 5-min aligned)
-        static_features: (8,) array of static features
+        sequence: (30, 47) array of temporal features (38 one-min + 9 five-min aligned)
+        static_continuous: (7,) array of continuous static features
+            [float_shares, short_interest, gap_pct, days_since_earnings,
+             high52_ratio, low52_ratio, premarket_range]
+        static_categorical: (1,) int array of categorical feature indices
+            [sector_id]  — embedded internally, embedding dim = 8
 
     Returns:
-        (p_win, entry_offset): probability of winning trade, suggested entry price offset
+        (p_win, entry_offset): probability of winning trade, ATR-normalized entry offset
     """
 ```
 
@@ -275,7 +339,7 @@ New dependencies to add to `requirements.txt`:
 | Package | Purpose |
 |---------|---------|
 | polygon-api-client | Polygon.io data collection |
-| schwab-py (or schwabdev) | Schwab API for live data + execution |
+| schwab-py | Schwab API for live data + execution |
 | matplotlib / seaborn | Interpretability visualizations |
 
 PyTorch is already a dependency. No new ML framework libraries needed — the TFT is implemented from scratch.
@@ -286,5 +350,7 @@ PyTorch is already a dependency. No new ML framework libraries needed — the TF
 
 - **Data quality:** Polygon.io 1-min bars may have gaps or corporate action artifacts. Need a data cleaning/validation step in `polygon_collector.py`.
 - **Feature consistency:** The legacy `* 1000` scaling in the candle pressure formula must be preserved exactly. Feature engineering is shared between training (`features.py`) and inference (`tft_predictor.py`) via a single code path.
-- **Overfitting:** 52 features on potentially <1000 events is a concern. TFT's variable selection and dropout mitigate this, but early stopping and walk-forward validation are critical.
+- **Overfitting:** 55 features on potentially <1000 events is a concern. TFT's variable selection and dropout mitigate this, but early stopping and walk-forward validation are critical.
 - **Latency:** TFT inference is heavier than the legacy feedforward net. Should benchmark — if >100ms per prediction on CPU, consider GPU or model optimization.
+- **Multi-instance support:** The legacy `live_data_gather_unified.py` supports multiple instances via `instance_id` CLI arg. The `tft_predictor.py` integration must preserve this — each instance loads the same model weights but writes to separate output CSVs (existing behavior).
+- **Hardware:** Training targets a single GPU (CUDA). For the dataset size (500-1000 sequences of length 30), training should complete in <1 hour on a consumer GPU. CPU fallback is acceptable but slower. Inference runs on CPU (latency target: <50ms per prediction).
