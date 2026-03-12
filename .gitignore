@@ -45,3 +45,6 @@ Thumbs.db
 
 # Planning docs (local only)
 .planning/
+
+# Git worktrees
+.worktrees/
