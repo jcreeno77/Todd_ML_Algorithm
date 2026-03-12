@@ -3,15 +3,14 @@ import torch.nn as nn
 
 
 class GatedLinearUnit(nn.Module):
-    """GLU gate: splits input in half, applies sigmoid to one half, multiplies."""
+    """GLU gate: splits input in half, applies sigmoid to one half, multiplies.
 
-    def __init__(self, input_size: int):
-        super().__init__()
-        self.fc = nn.Linear(input_size, input_size * 2)
+    Input must have even last dimension (2 * output_size). The upstream linear
+    layer is responsible for producing the doubled dimension.
+    """
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.fc(x)
-        a, b = out.chunk(2, dim=-1)
+        a, b = x.chunk(2, dim=-1)
         return a * torch.sigmoid(b)
 
 
@@ -36,8 +35,8 @@ class GatedResidualNetwork(nn.Module):
 
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.elu = nn.ELU()
-        self.fc2 = nn.Linear(hidden_size, output_size)
-        self.glu = GatedLinearUnit(output_size)
+        self.fc2 = nn.Linear(hidden_size, output_size * 2)
+        self.glu = GatedLinearUnit()
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(output_size)
 

@@ -40,12 +40,14 @@ class TemporalFusionTransformer(nn.Module):
             for card in categorical_cardinalities
         ])
         static_input_size = num_static_continuous + num_static_categorical * categorical_embedding_dim
+        num_static_features = num_static_continuous + num_static_categorical
 
         self.static_vsn = VariableSelectionNetwork(
             input_size=static_input_size,
-            num_features=static_input_size,
+            num_features=num_static_features,
             hidden_size=hidden_size,
             dropout=dropout,
+            feature_sizes=[1] * num_static_continuous + [categorical_embedding_dim] * num_static_categorical,
         )
 
         # Static context GRNs (4 context vectors)
@@ -79,7 +81,8 @@ class TemporalFusionTransformer(nn.Module):
             batch_first=True,
         )
 
-        self.post_lstm_glu = GatedLinearUnit(hidden_size)
+        self.post_lstm_fc = nn.Linear(hidden_size, hidden_size * 2)
+        self.post_lstm_glu = GatedLinearUnit()
         self.post_lstm_norm = nn.LayerNorm(hidden_size)
 
         # --- Static enrichment ---
@@ -92,7 +95,8 @@ class TemporalFusionTransformer(nn.Module):
         self.attention = InterpretableMultiHeadAttention(
             hidden_size=hidden_size, num_heads=attention_heads, dropout=dropout
         )
-        self.post_attn_glu = GatedLinearUnit(hidden_size)
+        self.post_attn_fc = nn.Linear(hidden_size, hidden_size * 2)
+        self.post_attn_glu = GatedLinearUnit()
         self.post_attn_norm = nn.LayerNorm(hidden_size)
 
         # --- Output ---
@@ -142,7 +146,7 @@ class TemporalFusionTransformer(nn.Module):
         c0 = cs_c.unsqueeze(0).expand(self.lstm.num_layers, -1, -1).contiguous()
         lstm_out, _ = self.lstm(temporal_selected, (h0, c0))
 
-        lstm_gated = self.post_lstm_glu(lstm_out)
+        lstm_gated = self.post_lstm_glu(self.post_lstm_fc(lstm_out))
         temporal_features = self.post_lstm_norm(lstm_gated + temporal_selected)
 
         # --- Static enrichment ---
@@ -150,7 +154,7 @@ class TemporalFusionTransformer(nn.Module):
 
         # --- Attention ---
         attn_out, attn_weights = self.attention(enriched)
-        attn_gated = self.post_attn_glu(attn_out)
+        attn_gated = self.post_attn_glu(self.post_attn_fc(attn_out))
         temporal_output = self.post_attn_norm(attn_gated + enriched)
 
         # --- Output: use last timestep ---

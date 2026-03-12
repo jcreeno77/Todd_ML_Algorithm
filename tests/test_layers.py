@@ -5,15 +5,15 @@ from ML_tradingAlgo.tft.layers import GatedLinearUnit, GatedResidualNetwork
 
 class TestGatedLinearUnit:
     def test_output_shape(self):
-        glu = GatedLinearUnit(input_size=160)
-        x = torch.randn(4, 160)
+        glu = GatedLinearUnit()
+        x = torch.randn(4, 320)  # Input must be 2 * output_size
         out = glu(x)
         assert out.shape == (4, 160)
 
     def test_output_bounded(self):
         """GLU uses sigmoid gate, so output magnitude should be bounded."""
-        glu = GatedLinearUnit(input_size=32)
-        x = torch.randn(4, 32)
+        glu = GatedLinearUnit()
+        x = torch.randn(4, 64)  # 2 * 32
         out = glu(x)
         assert out.abs().max() < 100
 
