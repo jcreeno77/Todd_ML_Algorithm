@@ -90,8 +90,8 @@ class TestTemporalFeatures:
             vix_level=sample_static_data["vix_level"],
             sector_etf_return=sample_static_data["sector_etf_return"],
         )
-        assert features.shape[1] == 54, f"Expected 54 1-min features, got {features.shape[1]}"
-        assert len(TEMPORAL_1MIN_FEATURE_NAMES) == 54
+        assert features.shape[1] == 60, f"Expected 60 1-min features, got {features.shape[1]}"
+        assert len(TEMPORAL_1MIN_FEATURE_NAMES) == 60
 
     def test_5min_feature_count(self, sample_5min_bars, sample_static_data):
         features = compute_temporal_features_5min(
@@ -180,7 +180,7 @@ class TestBuildFeatureMatrix:
             static_data=sample_static_data,
             sequence_length=30,
         )
-        assert temporal.shape == (30, 63), f"Expected (30, 63), got {temporal.shape}"
+        assert temporal.shape == (30, 69), f"Expected (30, 69), got {temporal.shape}"
         assert static_cont.shape == (9,)
         assert static_cat.shape == (1,)
 
@@ -311,3 +311,56 @@ class TestPriceLevelFeatures:
         # On the last bar the two VWAPs must differ (anchored excludes the cheap
         # premarket bars, so its VWAP is higher and the distance smaller).
         assert not np.isclose(feats[-1, i_anc], feats[-1, i_cum])
+
+
+class TestStructureFeatures:
+    def test_structure_features_present(self, sample_1min_bars):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        feats = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        for name in ["pullback_depth_atr", "higher_low_count", "new_hod_flag",
+                     "bars_since_hod", "price_accel", "volume_accel"]:
+            i = TEMPORAL_1MIN_FEATURE_NAMES.index(name)
+            assert np.all(np.isfinite(feats[:, i])), name
+
+    def test_pullback_nonnegative_and_hod_binary(self, sample_1min_bars):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        feats = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        i_pb = TEMPORAL_1MIN_FEATURE_NAMES.index("pullback_depth_atr")
+        i_hod = TEMPORAL_1MIN_FEATURE_NAMES.index("new_hod_flag")
+        assert np.all(feats[:, i_pb] >= -1e-6)
+        assert set(np.unique(feats[:, i_hod])).issubset({0.0, 1.0})
+
+    def test_total_1min_feature_count_is_60(self):
+        from ML_tradingAlgo.tft.features import TEMPORAL_1MIN_FEATURE_NAMES
+        assert len(TEMPORAL_1MIN_FEATURE_NAMES) == 60
+
+    def test_bars_since_hod_resets_and_increments(self):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        # Highs: rise for 3 bars (each a new HOD), then 3 bars below the HOD,
+        # then a new HOD again. Use a DatetimeIndex so the function is happy.
+        idx = pd.date_range("2026-05-29 09:30", periods=7, freq="1min", tz="US/Eastern")
+        highs = np.array([10.0, 11.0, 12.0, 11.5, 11.0, 11.8, 13.0])
+        bars = pd.DataFrame({
+            "open": highs - 0.2, "high": highs, "low": highs - 0.5,
+            "close": highs - 0.1, "volume": np.full(7, 10000.0),
+        }, index=idx)
+        feats = compute_temporal_features_1min(
+            bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        i = TEMPORAL_1MIN_FEATURE_NAMES.index("bars_since_hod")
+        # bars 0,1,2 are new HODs (->0), bar3 (+1), bar4 (+2), bar5 (+3),
+        # bar6 is a new HOD (->0).
+        np.testing.assert_array_equal(feats[:, i], [0, 0, 0, 1, 2, 3, 0])

@@ -1,6 +1,6 @@
 """Feature engineering pipeline for TFT momentum trader.
 
-Computes all 59 features (10 static + 40 one-min temporal + 9 five-min aggregate)
+Computes all 69 features (9 static + 60 one-min temporal + 9 five-min aggregate)
 from raw OHLCV bar data. Single code path for training and inference.
 
 Legacy candle pressure formula preserved: (((close-low)-(high-close))/open*1000) * (vol/float*100)
@@ -83,6 +83,13 @@ TEMPORAL_1MIN_FEATURE_NAMES: list[str] = [
     "prior_high_dist_atr",
     "gap_fill_progress",
     "ema_overextension_atr",
+    # Trend / structure (6)
+    "pullback_depth_atr",
+    "higher_low_count",
+    "new_hod_flag",
+    "bars_since_hod",
+    "price_accel",
+    "volume_accel",
 ]
 
 TEMPORAL_5MIN_FEATURE_NAMES: list[str] = [
@@ -303,7 +310,7 @@ def compute_temporal_features_1min(
         prior_day_high: Prior day high price.
 
     Returns:
-        np.ndarray of shape (n_bars, 54).
+        np.ndarray of shape (n_bars, 60).
     """
     # Capture a minute-of-day timeline from the DatetimeIndex if present;
     # otherwise fall back to bar position (assume 1-min spacing from the open).
@@ -494,7 +501,27 @@ def compute_temporal_features_1min(
     ema20 = _ema(c, 20)
     ema_overextension = (c - ema20) / atr_safe
 
-    # Assemble all 54 features
+    # --- Trend / structure (6) ---
+    hod = h.cummax()
+    pullback_depth = ((hod - c) / atr_safe).clip(lower=0)
+
+    higher_low = (l > l.shift(1)).astype(float).fillna(0)
+    higher_low_count = higher_low.rolling(10, min_periods=1).sum()
+
+    new_hod_flag = (h >= hod).astype(float)
+
+    bars_since_hod = pd.Series(np.zeros(n), dtype=float)
+    last_hod = 0
+    new_hod_vals = new_hod_flag.to_numpy()
+    for i in range(n):
+        if new_hod_vals[i] > 0:
+            last_hod = i
+        bars_since_hod.iloc[i] = float(i - last_hod)
+
+    price_accel = c.diff().diff().fillna(0)
+    volume_accel = v.astype(float).diff().diff().fillna(0)
+
+    # Assemble all 60 features
     features = pd.DataFrame({
         TEMPORAL_1MIN_FEATURE_NAMES[0]: open_vwap,
         TEMPORAL_1MIN_FEATURE_NAMES[1]: high_vwap,
@@ -550,6 +577,12 @@ def compute_temporal_features_1min(
         "prior_high_dist_atr": prior_high_dist.reset_index(drop=True),
         "gap_fill_progress": gap_fill_progress.reset_index(drop=True),
         "ema_overextension_atr": ema_overextension.reset_index(drop=True),
+        "pullback_depth_atr": pullback_depth.reset_index(drop=True),
+        "higher_low_count": higher_low_count.reset_index(drop=True),
+        "new_hod_flag": new_hod_flag.reset_index(drop=True),
+        "bars_since_hod": bars_since_hod,
+        "price_accel": price_accel.reset_index(drop=True),
+        "volume_accel": volume_accel.reset_index(drop=True),
     })
 
     # Fill any remaining NaN from warmup periods
@@ -724,7 +757,7 @@ def build_feature_matrix(
 
     Returns:
         Tuple of:
-          - temporal: (sequence_length, 63) — 54 1-min + 9 5-min features
+          - temporal: (sequence_length, 69) — 60 1-min + 9 5-min features
           - static_continuous: (9,)
           - static_categorical: (1,)
     """
@@ -762,7 +795,7 @@ def build_feature_matrix(
         idx_5min = min(i // 5, n_5min - 1)
         aligned_5min[i] = features_5min[idx_5min]
 
-    # Concatenate: 54 1-min + 9 5-min = 63 temporal features
+    # Concatenate: 60 1-min + 9 5-min = 69 temporal features
     temporal = np.concatenate([features_1min, aligned_5min], axis=1)
 
     # Take last sequence_length bars
