@@ -1,6 +1,6 @@
 """Feature engineering pipeline for TFT momentum trader.
 
-Computes all 69 features (9 static + 60 one-min temporal + 9 five-min aggregate)
+Computes all 69 temporal features (60 one-min + 9 five-min aggregate) and 11 static-continuous features
 from raw OHLCV bar data. Single code path for training and inference.
 
 Legacy candle pressure formula preserved: (((close-low)-(high-close))/open*1000) * (vol/float*100)
@@ -687,7 +687,7 @@ def compute_static_features(
     """Compute static features.
 
     Returns:
-        Tuple of (continuous_features [9], categorical_features [1]).
+        Tuple of (continuous_features [11], categorical_features [1]).
     """
     # 1. float_shares (log-scaled)
     float_log = np.log(max(float_shares, 1))
@@ -725,7 +725,10 @@ def compute_static_features(
             dow_sin = float(np.sin(angle))
             dow_cos = float(np.cos(angle))
 
-    day_of_run_val = float(day_of_run) if day_of_run is not None else 1.0
+    try:
+        day_of_run_val = float(day_of_run) if day_of_run is not None else 1.0
+    except (TypeError, ValueError):
+        day_of_run_val = 1.0
     if prior_day_range and prior_day_range > 0:
         gap_vs_prior_range = (current_price - prior_close) / prior_day_range
     else:
@@ -771,7 +774,7 @@ def build_feature_matrix(
     Returns:
         Tuple of:
           - temporal: (sequence_length, 69) — 60 1-min + 9 5-min features
-          - static_continuous: (9,)
+          - static_continuous: (11,)
           - static_categorical: (1,)
     """
     # Compute 1-min temporal features

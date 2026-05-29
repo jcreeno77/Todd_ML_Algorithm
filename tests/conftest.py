@@ -11,8 +11,8 @@ def model_config():
         "lstm_layers": 2,
         "attention_heads": 4,
         "dropout": 0.3,
-        "num_temporal_features": 47,
-        "num_static_continuous": 7,
+        "num_temporal_features": 69,
+        "num_static_continuous": 11,
         "num_static_categorical": 1,
         "categorical_cardinalities": [11],  # 11 GICS sectors
         "categorical_embedding_dim": 8,

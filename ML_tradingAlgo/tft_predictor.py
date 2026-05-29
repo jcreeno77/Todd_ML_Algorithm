@@ -46,8 +46,8 @@ class TFTPredictor:
         """Run inference on a single sample.
 
         Args:
-            sequence: (30, 47) float array.
-            static_continuous: (7,) float array.
+            sequence: (30, 69) float array.
+            static_continuous: (11,) float array.
             static_categorical: (1,) int array.
 
         Returns:
@@ -56,6 +56,19 @@ class TFTPredictor:
         sequence = np.asarray(sequence, dtype=np.float32)
         static_continuous = np.asarray(static_continuous, dtype=np.float32)
         static_categorical = np.asarray(static_categorical, dtype=np.int64)
+
+        # Explicit dimension guard: fail loudly if feature widths don't match norm_stats.
+        exp_temporal = self.norm_stats["temporal_mean"].shape[0]
+        exp_static = self.norm_stats["static_mean"].shape[0]
+        if sequence.shape[-1] != exp_temporal:
+            raise ValueError(
+                f"temporal feature width {sequence.shape[-1]} != expected {exp_temporal} "
+                f"(model/norm_stats). Live feature builder is out of sync with the model."
+            )
+        if static_continuous.shape[-1] != exp_static:
+            raise ValueError(
+                f"static_continuous width {static_continuous.shape[-1]} != expected {exp_static}."
+            )
 
         # z-score normalize (categorical untouched).
         sequence = (sequence - self.norm_stats["temporal_mean"]) / self.norm_stats["temporal_std"]

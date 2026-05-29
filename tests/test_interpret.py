@@ -28,7 +28,7 @@ def test_feature_importance_length_and_sum(model_config, sample_batch):
     imp = interpret.feature_importance(model, loader)
 
     assert isinstance(imp, dict)
-    assert len(imp) == 47
+    assert len(imp) == 69
     values = list(imp.values())
     assert all(v >= 0 for v in values)
     # VSN selection weights are a softmax over features, so per-feature means
@@ -40,7 +40,7 @@ def test_feature_importance_uses_names(model_config, sample_batch):
     model = _build_model(model_config)
     loader = _build_loader(sample_batch)
 
-    names = [f"f{i}" for i in range(47)]
+    names = [f"f{i}" for i in range(69)]
     imp = interpret.feature_importance(model, loader, feature_names=names)
     assert set(imp.keys()) == set(names)
 
@@ -51,7 +51,7 @@ def test_static_feature_importance_length(model_config, sample_batch):
 
     imp = interpret.static_feature_importance(model, loader)
     assert isinstance(imp, dict)
-    assert len(imp) == 7
+    assert len(imp) == 11
     assert all(v >= 0 for v in imp.values())
 
 

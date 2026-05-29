@@ -13,10 +13,10 @@ def checkpoint_dir(tmp_path, model_config):
     torch.save(model.state_dict(), tmp_path / "model.pt")
     np.savez(
         tmp_path / "norm_stats.npz",
-        temporal_mean=np.zeros(47, dtype=np.float32),
-        temporal_std=np.ones(47, dtype=np.float32),
-        static_mean=np.zeros(7, dtype=np.float32),
-        static_std=np.ones(7, dtype=np.float32),
+        temporal_mean=np.zeros(69, dtype=np.float32),
+        temporal_std=np.ones(69, dtype=np.float32),
+        static_mean=np.zeros(11, dtype=np.float32),
+        static_std=np.ones(11, dtype=np.float32),
     )
     return tmp_path
 
@@ -24,8 +24,8 @@ def checkpoint_dir(tmp_path, model_config):
 @pytest.fixture
 def raw_inputs():
     rng = np.random.default_rng(0)
-    sequence = rng.standard_normal((30, 47)).astype(np.float32)
-    static_continuous = rng.standard_normal(7).astype(np.float32)
+    sequence = rng.standard_normal((30, 69)).astype(np.float32)
+    static_continuous = rng.standard_normal(11).astype(np.float32)
     static_categorical = np.array([3], dtype=np.int64)
     return sequence, static_continuous, static_categorical
 
@@ -71,18 +71,18 @@ def test_normalization_is_applied(tmp_path, model_config, raw_inputs):
     # Identity stats.
     np.savez(
         dir_a / "norm_stats.npz",
-        temporal_mean=np.zeros(47, dtype=np.float32),
-        temporal_std=np.ones(47, dtype=np.float32),
-        static_mean=np.zeros(7, dtype=np.float32),
-        static_std=np.ones(7, dtype=np.float32),
+        temporal_mean=np.zeros(69, dtype=np.float32),
+        temporal_std=np.ones(69, dtype=np.float32),
+        static_mean=np.zeros(11, dtype=np.float32),
+        static_std=np.ones(11, dtype=np.float32),
     )
     # Shifted mean, scaled std.
     np.savez(
         dir_b / "norm_stats.npz",
-        temporal_mean=np.full(47, 5.0, dtype=np.float32),
-        temporal_std=np.full(47, 3.0, dtype=np.float32),
-        static_mean=np.full(7, 2.0, dtype=np.float32),
-        static_std=np.full(7, 4.0, dtype=np.float32),
+        temporal_mean=np.full(69, 5.0, dtype=np.float32),
+        temporal_std=np.full(69, 3.0, dtype=np.float32),
+        static_mean=np.full(11, 2.0, dtype=np.float32),
+        static_std=np.full(11, 4.0, dtype=np.float32),
     )
 
     pred_a = TFTPredictor(dir_a, model_config)
@@ -99,3 +99,33 @@ def test_determinism(checkpoint_dir, model_config, raw_inputs):
     out1 = predictor.predict(*raw_inputs)
     out2 = predictor.predict(*raw_inputs)
     assert out1 == out2
+
+
+def test_predictor_accepts_69_11_and_rejects_mismatch(tmp_path):
+    import numpy as np, torch
+    from ML_tradingAlgo.tft.model import TemporalFusionTransformer
+    from ML_tradingAlgo.tft_predictor import TFTPredictor
+
+    cfg = {
+        "hidden_size": 32, "lstm_layers": 1, "attention_heads": 2, "dropout": 0.1,
+        "num_temporal_features": 69, "num_static_continuous": 11,
+        "num_static_categorical": 1, "categorical_cardinalities": [11],
+        "categorical_embedding_dim": 8, "sequence_length": 30,
+    }
+    torch.save(TemporalFusionTransformer(**cfg).state_dict(), tmp_path / "model.pt")
+    np.savez(
+        tmp_path / "norm_stats.npz",
+        temporal_mean=np.zeros(69, "float32"), temporal_std=np.ones(69, "float32"),
+        static_mean=np.zeros(11, "float32"), static_std=np.ones(11, "float32"),
+    )
+    pred = TFTPredictor(tmp_path, cfg)
+
+    p_win, offset = pred.predict(
+        np.zeros((30, 69), "float32"), np.zeros(11, "float32"), np.zeros(1, "int64")
+    )
+    assert 0.0 <= p_win <= 1.0
+
+    # Stale 47-wide input must fail loudly, not silently mis-broadcast.
+    with pytest.raises(ValueError):
+        pred.predict(np.zeros((30, 47), "float32"), np.zeros(11, "float32"),
+                     np.zeros(1, "int64"))

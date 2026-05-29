@@ -311,7 +311,7 @@ def train_all_folds(assembled, model_config, output_dir, num_folds=4,
 
     Args:
         assembled: dict from ``data.assemble.assemble_dataset`` with keys
-            ``temporal`` (N,30,47), ``static_continuous`` (N,7),
+            ``temporal`` (N,30,69), ``static_continuous`` (N,11),
             ``static_categorical`` (N,1), ``y_win`` (N,), ``y_offset`` (N,),
             ``sample_weights`` (N,), and ``session_dates`` (list of N).
 

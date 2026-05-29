@@ -203,7 +203,7 @@ def build_static_data(
         "session_date": event_row.get("session_date"),
         "prior_day_high": _finite(event_row.get("prior_day_high"), default=prior_close),
         "prior_day_range": _finite(event_row.get("prior_day_range"), default=0.0),
-        "day_of_run": int(event_row.get("day_of_run") or 1),
+        "day_of_run": int(_finite(event_row.get("day_of_run"), default=1) or 1),
         "intraday_volume_profile": event_row.get("intraday_volume_profile"),
     }
 

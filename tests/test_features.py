@@ -366,6 +366,36 @@ class TestStructureFeatures:
         np.testing.assert_array_equal(feats[:, i], [0, 0, 0, 1, 2, 3, 0])
 
 
+class TestFeatureMatrixDims:
+    def test_build_feature_matrix_shapes(self, sample_1min_bars, sample_5min_bars, sample_static_data):
+        from ML_tradingAlgo.tft.features import build_feature_matrix
+        data = dict(sample_static_data)
+        data.update({"session_date": "2026-05-29", "prior_day_high": 6.0,
+                     "prior_day_range": 1.5, "day_of_run": 1,
+                     "intraday_volume_profile": None})
+        temporal, cont, cat = build_feature_matrix(
+            sample_1min_bars, sample_5min_bars, data, sequence_length=30,
+        )
+        assert temporal.shape == (30, 69)
+        assert cont.shape == (11,)
+        assert cat.shape == (1,)
+
+    def test_model_forward_with_new_dims(self):
+        import torch
+        from ML_tradingAlgo.tft.model import TemporalFusionTransformer
+        cfg = {
+            "hidden_size": 32, "lstm_layers": 1, "attention_heads": 2,
+            "dropout": 0.1, "num_temporal_features": 69,
+            "num_static_continuous": 11, "num_static_categorical": 1,
+            "categorical_cardinalities": [11], "categorical_embedding_dim": 8,
+            "sequence_length": 30,
+        }
+        m = TemporalFusionTransformer(**cfg)
+        p, off, attn = m(torch.randn(2, 30, 69), torch.randn(2, 11),
+                         torch.randint(0, 11, (2, 1)))
+        assert p.shape[0] == 2 and off.shape[0] == 2
+
+
 class TestNewStaticFeatures:
     def test_static_count_is_11(self):
         from ML_tradingAlgo.tft.features import STATIC_CONTINUOUS_FEATURE_NAMES

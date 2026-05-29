@@ -29,8 +29,8 @@ def _make_assembled(n=64, seed=0, val_static_shift=0.0):
     single-train-fold setup) gets a different static_continuous mean.
     """
     rng = np.random.default_rng(seed)
-    temporal = rng.normal(size=(n, 30, 47)).astype(np.float32)
-    static_continuous = rng.normal(size=(n, 7)).astype(np.float32)
+    temporal = rng.normal(size=(n, 30, 69)).astype(np.float32)
+    static_continuous = rng.normal(size=(n, 11)).astype(np.float32)
     static_categorical = rng.integers(0, 11, size=(n, 1)).astype(np.int64)
     y_win = rng.integers(0, 2, size=(n,)).astype(np.float32)
     y_offset = rng.normal(size=(n,)).astype(np.float32)
@@ -229,11 +229,11 @@ def test_evaluate_perfect_predictions():
     n = 16
     rng = np.random.default_rng(5)
     y_win = rng.integers(0, 2, size=(n,)).astype(np.float32)
-    temporal = np.zeros((n, 30, 47), dtype=np.float32)
+    temporal = np.zeros((n, 30, 69), dtype=np.float32)
     temporal[:, 0, 0] = y_win  # encode label so _PerfectModel reproduces it
     ds = TFTDataset(
         temporal,
-        np.zeros((n, 7), dtype=np.float32),
+        np.zeros((n, 11), dtype=np.float32),
         np.zeros((n, 1), dtype=np.int64),
         y_win,
         np.zeros((n,), dtype=np.float32),

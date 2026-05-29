@@ -1,8 +1,8 @@
 """Dataset and normalization utilities for the Temporal Fusion Transformer.
 
 The TFT consumes three input groups per sample:
-  - temporal: (30, 47) sliding-window candle/feature matrix
-  - static_continuous: (7,) per-symbol continuous features (e.g. float, ADV)
+  - temporal: (30, 69) sliding-window candle/feature matrix
+  - static_continuous: (11,) per-symbol continuous features (e.g. float, ADV)
   - static_categorical: (1,) categorical code (e.g. GICS sector) -- never normalized
 
 Normalization statistics are computed across both the sample and timestep axes
@@ -27,12 +27,12 @@ def compute_normalization_stats(temporal: np.ndarray, static_continuous: np.ndar
     """Compute per-feature normalization statistics.
 
     Args:
-        temporal: (N, 30, 47) float array.
-        static_continuous: (N, 7) float array.
+        temporal: (N, 30, 69) float array.
+        static_continuous: (N, 11) float array.
 
     Returns:
-        dict with keys "temporal_mean" (47,), "temporal_std" (47,),
-        "static_mean" (7,), "static_std" (7,). Standard deviations are clamped
+        dict with keys "temporal_mean" (69,), "temporal_std" (69,),
+        "static_mean" (11,), "static_std" (11,). Standard deviations are clamped
         to a floor of 1e-8 to avoid division by zero on constant features.
         The categorical feature is not handled here.
     """
@@ -95,7 +95,7 @@ class TFTDataset(Dataset):
         return self.temporal.shape[0]
 
     def _augment_temporal(self, temporal: np.ndarray) -> np.ndarray:
-        """Apply noise, time roll, and feature dropout to a (30, 47) array."""
+        """Apply noise, time roll, and feature dropout to a (30, 69) array."""
         cfg = self.augment_cfg
 
         noise_std = cfg["noise_std"]

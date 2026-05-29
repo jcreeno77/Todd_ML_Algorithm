@@ -22,7 +22,7 @@ from .features import (
     TEMPORAL_5MIN_FEATURE_NAMES,
 )
 
-# Canonical temporal feature ordering (47 = 38 one-minute + 9 five-minute).
+# Canonical temporal feature ordering (69 = 60 one-minute + 9 five-minute).
 TEMPORAL_FEATURE_NAMES = TEMPORAL_1MIN_FEATURE_NAMES + TEMPORAL_5MIN_FEATURE_NAMES
 
 
