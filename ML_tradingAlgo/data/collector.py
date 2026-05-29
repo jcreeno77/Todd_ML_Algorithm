@@ -278,11 +278,13 @@ def _merge_fundamentals(symbol: str, asof_date: dt.date,
 # --------------------------------------------------------------------------- #
 def run_nightly(asof_date) -> dict:
     """Run the nightly collection for ``asof_date`` and return a summary dict."""
-    # Heads-up if the Schwab refresh token is near its 7-day hard expiry; this
-    # only logs (channel-agnostic), it never blocks the run.
+    # Heads-up if the Schwab refresh token is near its 7-day hard expiry. Routed
+    # through the channel-agnostic notifier (logs by default, Discord webhook if
+    # configured); never blocks the run.
     try:
         from ML_tradingAlgo.data.token_health import check_token_freshness
-        check_token_freshness()
+        from ML_tradingAlgo.data.notify import notify
+        check_token_freshness(notify=notify)
     except Exception:
         pass
 

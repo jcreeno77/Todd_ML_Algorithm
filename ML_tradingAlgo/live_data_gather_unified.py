@@ -7,13 +7,17 @@ import time
 import numpy as np
 import tda
 from tda import auth, client
-from config import TD_AMERITRADE_CLIENT_ID as client_id, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, BROKERAGE_ACCOUNT_ID, WHATSAPP_FROM, WHATSAPP_TO
+from config import TD_AMERITRADE_CLIENT_ID as client_id, BROKERAGE_ACCOUNT_ID
 from TD_Ameritrade_Data import arrange_fundamentals
 from Todd_tradingAlgo1 import Todd_predict
 
-#Sets client for SMS messaging
-from twilio.rest import Client
-twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+# Channel-agnostic alerting (Twilio removed). Defaults to logging; POSTs to a
+# Discord webhook when ALERT_WEBHOOK_URL is set. Import works whether the loop is
+# run from the repo root (as a module) or from within ML_tradingAlgo/.
+try:
+    from ML_tradingAlgo.data.notify import notify
+except ImportError:  # run with CWD inside ML_tradingAlgo/
+    from data.notify import notify
 
 #money to spend per trade
 trade_amount = 25
@@ -313,11 +317,7 @@ def main():
                     buy_price = stockPrice
                     buy_time = int(time.time())
                     buyTime_since_open = (buy_time - Market_open) / 60
-                    sms_text = "Todd just bought " + str(ticker) + " for " + str(buy_price) + " at " + str(time.time())
-                    message = twilio_client.messages.create(
-                        body=sms_text,
-                        from_=WHATSAPP_FROM,
-                        to=WHATSAPP_TO)
+                    notify("Todd just bought " + str(ticker) + " for " + str(buy_price) + " at " + str(time.time()))
 
                     #organizes the buy amount
                     buy_quantity = round(trade_amount/stockPrice)
@@ -381,11 +381,7 @@ def main():
                 file.write(to_write)
             noted1 = True
 
-            sms_text = "Todd just sold " + str(ticker) + " for a percent change of " + str(percent_change) + " SOLD 2"
-            message = twilio_client.messages.create(
-                body=sms_text,
-                from_=WHATSAPP_FROM,
-                to=WHATSAPP_TO)
+            notify("Todd just sold " + str(ticker) + " for a percent change of " + str(percent_change) + " SOLD 2")
 
             #sell code
             sell_quantity = buy_quantity/2
@@ -402,11 +398,7 @@ def main():
                 file.write(to_write)
             noted2 = True
 
-            sms_text = "Todd just sold " + str(ticker) + " for a percent change of " + str(percent_change) + " SOLD 3"
-            message = twilio_client.messages.create(
-                body=sms_text,
-                from_=WHATSAPP_FROM,
-                to=WHATSAPP_TO)
+            notify("Todd just sold " + str(ticker) + " for a percent change of " + str(percent_change) + " SOLD 3")
 
             #sell code
             sell_quantity = buy_quantity/2

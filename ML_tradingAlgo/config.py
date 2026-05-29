@@ -2,12 +2,18 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
-TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 BROKERAGE_ACCOUNT_ID = os.environ["BROKERAGE_ACCOUNT_ID"]
-WHATSAPP_FROM = os.environ["WHATSAPP_FROM"]
-WHATSAPP_TO = os.environ["WHATSAPP_TO"]
 TD_AMERITRADE_CLIENT_ID = os.environ["TD_AMERITRADE_CLIENT_ID"]
+
+# --- Alerting (Twilio removed) ---
+# Channel-agnostic notifier (ML_tradingAlgo/data/notify.py) reads this directly.
+# Unset -> alerts log only; set to a Discord webhook URL to also POST there.
+ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL")
+
+# --- Trading execution (Schwab) ---
+# Real-money safety switch. Default OFF: orders are logged (dry-run) but NOT sent
+# to Schwab (which has no paper-trading API). Set TRADING_ENABLED=true for live orders.
+TRADING_ENABLED = os.getenv("TRADING_ENABLED", "false")
 
 # --- Schwab API / S3 storage / Fundamentals (TFT data pipeline) ---
 # Optional at import time (os.getenv -> None when unset) so the module loads

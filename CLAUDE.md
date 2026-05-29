@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A momentum gap-up trading system that identifies and trades low-float stocks gapping up 25–50% on high relative volume. The legacy codebase (in `ML_tradingAlgo/`) uses TD Ameritrade API, a simple feedforward PyTorch model, and Twilio for WhatsApp alerts. A new architecture spec (`momentum_trader_project_spec.md`) describes the target system: LSTM+Attention model, Schwab API, PineScript backtesting, and real-time scanner.
+A momentum gap-up trading system that identifies and trades low-float stocks gapping up 25–50% on high relative volume. The legacy codebase (in `ML_tradingAlgo/`) uses TD Ameritrade API and a simple feedforward PyTorch model. A new architecture spec (`momentum_trader_project_spec.md`) describes the target system: LSTM+Attention model, Schwab API, PineScript backtesting, and real-time scanner.
+
+**Alerting:** Twilio has been fully removed. All alerts route through a channel-agnostic notifier (`ML_tradingAlgo/data/notify.py`), which logs by default and POSTs to a Discord webhook when `ALERT_WEBHOOK_URL` is set. See `docs/notifications.md`.
 
 ## Architecture
 
@@ -20,7 +22,7 @@ live_data_gather_unified.py (live trading loop)
   → Gathers 1-min and 5-min candles via TDA API polling
   → Engineers 47 features (8×5min candles + 5×1min candles, each with weighted/unweighted/squared variants, plus fundamentals)
   → Calls Todd_tradingAlgo1.Todd_predict() for buy signals
-  → Executes trades via tda-api, sends WhatsApp via Twilio
+  → Executes trades via tda-api, sends alerts via notify() (logging / Discord webhook)
   → Split exit: half at trailing stop, half at fixed TP/SL
 ```
 
@@ -32,7 +34,7 @@ live_data_gather_unified.py (live trading loop)
 
 ### Configuration
 
-- All secrets in `ML_tradingAlgo/.env` (loaded via `config.py`): Twilio creds, brokerage account ID, WhatsApp numbers, TD Ameritrade client ID
+- All secrets in `ML_tradingAlgo/.env` (loaded via `config.py`): brokerage account ID, TD Ameritrade client ID, optional `ALERT_WEBHOOK_URL` for alerts, plus Schwab/AWS/fundamentals keys for the TFT data pipeline
 - `.env.example` shows required variables
 
 ## Commands
