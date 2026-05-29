@@ -234,6 +234,7 @@ def assemble_event(
     read_bars=None,
     fundamentals_lookup=None,
     spy_bars=None,
+    bar_transform=None,
 ) -> dict | None:
     """Assemble ONE labeled event into model-ready arrays.
 
@@ -256,6 +257,12 @@ def assemble_event(
     On its own ``assemble_event`` cannot record a skip reason in a shared list,
     so it returns ``None``; ``assemble_dataset`` re-derives the reason. Callers
     needing the reason should use :func:`_assemble_event_with_reason`.
+
+    ``bar_transform`` is an optional callable ``(df: DataFrame) -> DataFrame``
+    that receives the raw 1-min OHLCV bars (with DatetimeIndex already set)
+    BEFORE entry detection and feature engineering. It must return a
+    length-preserving frame with the same index. When ``None`` (default) the
+    bars are used unmodified.
     """
     result = _assemble_event_with_reason(
         event_row,
@@ -267,6 +274,7 @@ def assemble_event(
         read_bars=read_bars,
         fundamentals_lookup=fundamentals_lookup,
         spy_bars=spy_bars,
+        bar_transform=bar_transform,
     )
     return result[0]
 
@@ -281,8 +289,15 @@ def _assemble_event_with_reason(
     read_bars=None,
     fundamentals_lookup=None,
     spy_bars=None,
+    bar_transform=None,
 ) -> tuple[dict | None, str | None]:
-    """Like :func:`assemble_event` but returns ``(result, skip_reason)``."""
+    """Like :func:`assemble_event` but returns ``(result, skip_reason)``.
+
+    ``bar_transform`` — optional callable applied to the raw OHLCV bars after
+    the DatetimeIndex is set and BEFORE entry detection / feature engineering.
+    Must be length- and index-preserving (contract enforced by re-assigning the
+    original index after transformation).
+    """
     if hasattr(event_row, "to_dict"):
         event_row = event_row.to_dict()
 
@@ -306,6 +321,13 @@ def _assemble_event_with_reason(
         return None, "no_ts"
     bars = bars.sort_values("ts")
     bars = bars.set_index(pd.DatetimeIndex(pd.to_datetime(bars["ts"])))
+
+    # --- optional bar-level augmentation (applied to raw bars BEFORE features)
+    if bar_transform is not None:
+        transformed = bar_transform(bars[["open", "high", "low", "close", "volume"]])
+        transformed.index = bars.index  # enforce length-preserving contract
+        for col in ["open", "high", "low", "close", "volume"]:
+            bars[col] = transformed[col].to_numpy()
 
     entry_idx = _labeler._first_regular_hours_idx(bars)
 
@@ -375,6 +397,10 @@ def assemble_dataset(
     read_bars=None,
     fundamentals_lookup=None,
     spy_lookup=None,
+    augment: bool = False,
+    n_augment: int = 0,
+    bar_transforms=None,
+    augment_rng=None,
 ) -> dict:
     """Enumerate events, assemble each, stack into arrays, weight by recency.
 
@@ -385,6 +411,21 @@ def assemble_dataset(
     Recency sample weights: ``w = exp(-lambda_decay * age_months)`` where
     ``age_months = (asof - session_date).days / 30.44``. ``asof`` defaults to the
     max session_date among the *kept* events, so the newest event has weight 1.0.
+
+    Augmentation (train-only):
+        When ``augment=True`` and ``n_augment > 0``, each successfully assembled
+        original sample is followed immediately by ``n_augment`` augmented copies
+        produced by re-running ``_assemble_event_with_reason`` with a
+        ``bar_transform`` chosen from ``bar_transforms``. Augmented samples are
+        tagged with ``is_augmented=True`` and ``parent_index`` pointing to the
+        position of their original sample in the stacked arrays. Original samples
+        have ``is_augmented=False`` and ``parent_index`` equal to their own
+        position.
+
+        ``bar_transforms`` — list of callables (one is chosen per augmentation,
+        cycling when ``n_augment > len(bar_transforms)``); when ``None``/empty an
+        identity pass-through is used. ``augment_rng`` — ``np.random.RandomState``
+        for transform selection; a fresh one is created when ``None``.
 
     Returns::
 
@@ -398,6 +439,8 @@ def assemble_dataset(
             "session_dates": list,
             "symbols": list,
             "skipped": list[(symbol, session_date, reason)],
+            "is_augmented": (N,) bool,
+            "parent_index": (N,) int64,
         }
     """
     rb = read_bars if read_bars is not None else _default_read_bars()
@@ -424,6 +467,8 @@ def assemble_dataset(
     session_dates: list = []
     symbols: list = []
     skipped: list[tuple] = []
+    is_aug_list: list[bool] = []
+    parent_list: list[int] = []
 
     if events is None or len(events) == 0:
         return _empty_dataset(sequence_length)
@@ -473,6 +518,9 @@ def assemble_dataset(
             skipped.append((symbol, session_date, reason))
             continue
 
+        # Record the index this original will occupy in the stacked arrays.
+        parent_pos = len(temporal_list)
+
         temporal_list.append(result["temporal"])
         static_cont_list.append(result["static_continuous"])
         static_cat_list.append(result["static_categorical"])
@@ -480,6 +528,43 @@ def assemble_dataset(
         y_offset_list.append(result["y_offset"])
         session_dates.append(result["session_date"])
         symbols.append(result["symbol"])
+        is_aug_list.append(False)
+        parent_list.append(parent_pos)
+
+        # --- augmentation (train-only) --------------------------------------
+        if augment and n_augment > 0:
+            _aug_rng = augment_rng if augment_rng is not None else np.random.RandomState()
+            _transforms = bar_transforms if bar_transforms else [lambda df: df]
+            for _ in range(n_augment):
+                # Choose a transform randomly when multiple are provided.
+                if len(_transforms) == 1:
+                    tf = _transforms[0]
+                else:
+                    tf = _transforms[int(_aug_rng.randint(0, len(_transforms)))]
+
+                aug_result, _ = _assemble_event_with_reason(
+                    event_row,
+                    tp_pct=tp_pct,
+                    sl_pct=sl_pct,
+                    lookahead_bars=lookahead_bars,
+                    sequence_length=sequence_length,
+                    min_bars=min_bars,
+                    read_bars=rb,
+                    fundamentals_lookup=fundamentals_lookup,
+                    spy_bars=spy_bars,
+                    bar_transform=tf,
+                )
+                if aug_result is None:
+                    continue
+                temporal_list.append(aug_result["temporal"])
+                static_cont_list.append(aug_result["static_continuous"])
+                static_cat_list.append(aug_result["static_categorical"])
+                y_win_list.append(aug_result["y_win"])
+                y_offset_list.append(aug_result["y_offset"])
+                session_dates.append(aug_result["session_date"])
+                symbols.append(aug_result["symbol"])
+                is_aug_list.append(True)
+                parent_list.append(parent_pos)
 
     if not temporal_list:
         out = _empty_dataset(sequence_length)
@@ -498,6 +583,8 @@ def assemble_dataset(
         "session_dates": session_dates,
         "symbols": symbols,
         "skipped": skipped,
+        "is_augmented": np.asarray(is_aug_list, dtype=bool),
+        "parent_index": np.asarray(parent_list, dtype=np.int64),
     }
 
 
@@ -549,4 +636,6 @@ def _empty_dataset(sequence_length: int) -> dict:
         "session_dates": [],
         "symbols": [],
         "skipped": [],
+        "is_augmented": np.empty((0,), dtype=bool),
+        "parent_index": np.empty((0,), dtype=np.int64),
     }

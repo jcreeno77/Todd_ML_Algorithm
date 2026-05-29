@@ -340,3 +340,133 @@ def test_alignment_guard():
 
     # Sanity: entry bar is the first 09:30 bar (offset 0 -> index n_pre == 10).
     assert entry_idx == 40
+
+
+# --------------------------------------------------------------------------- #
+# helpers for Task-9 augmentation tests
+# --------------------------------------------------------------------------- #
+def _synthetic_event_and_bars():
+    """Return (event_row, bars_df) with enough premarket bars to pass min_bars.
+
+    We generate 40 premarket bars (08:50–09:29) + 30 regular-hours bars
+    (09:30–09:59), matching the shape used by make_session_bars(n_pre=40,
+    n_post=30). The ts column is timezone-aware (US/Eastern) so
+    _first_regular_hours_idx correctly finds the 09:30 bar at position 40.
+    """
+    import pandas as pd
+    import numpy as np
+
+    n_pre = 40
+    n_post = 30
+    session_date = dt.date(2026, 5, 29)
+    open_dt = pd.Timestamp("2026-05-29 09:30:00", tz="America/New_York")
+
+    rng = np.random.RandomState(0)
+    base_prices = 5.0 + np.cumsum(rng.randn(n_pre + n_post) * 0.02)
+
+    rows = []
+    for i in range(n_pre + n_post):
+        minute_offset = i - n_pre  # 09:30 bar at offset 0 -> index n_pre
+        ts = open_dt + pd.Timedelta(minutes=minute_offset)
+        c = float(base_prices[i])
+        rows.append({
+            "symbol": "TST",
+            "session_date": session_date,
+            "ts": ts,
+            "open": c - 0.02,
+            "high": c + 0.05,
+            "low": c - 0.05,
+            "close": c + 0.01,
+            "volume": 20000.0,
+        })
+
+    bars = pd.DataFrame(rows)
+
+    event = {
+        "symbol": "TST",
+        "session_date": str(session_date),
+        "float_shares": 1_000_000.0,
+        "prior_close": 4.0,
+        "gap_pct": 0.25,
+        "premarket_high": 5.2,
+        "premarket_low": 4.6,
+        "open_price": 5.0,
+        "rvol_at_open": 5.0,
+    }
+    return event, bars
+
+
+def _make_augment_read(bars):
+    """Return a read_bars callable that serves ``bars`` for bars_minute queries."""
+    def _read(table, symbol=None, date_range=None, source=None, dedupe_keys=None):
+        if table == "bars_minute":
+            return bars.copy()
+        raise AssertionError(f"unexpected table {table!r}")
+    return _read
+
+
+# --------------------------------------------------------------------------- #
+# Task-9 Test A: bar_transform changes features but keeps shape
+# --------------------------------------------------------------------------- #
+def test_bar_transform_changes_features_keeps_shape():
+    from ML_tradingAlgo.tft.augment import jitter_bars
+
+    event, bars = _synthetic_event_and_bars()
+    read = _make_augment_read(bars)
+
+    base = assemble.assemble_event(event, read_bars=read, min_bars=35, sequence_length=30)
+    aug = assemble.assemble_event(
+        event,
+        read_bars=read,
+        min_bars=35,
+        sequence_length=30,
+        bar_transform=lambda df: jitter_bars(df, sigma=0.02, rng=np.random.RandomState(7)),
+    )
+
+    assert base is not None, "base assemble_event returned None — check _synthetic_event_and_bars"
+    assert aug is not None, "augmented assemble_event returned None"
+    assert base["temporal"].shape == aug["temporal"].shape == (30, 69)
+    assert not np.allclose(base["temporal"], aug["temporal"])
+
+
+# --------------------------------------------------------------------------- #
+# Task-9 Test B: assemble_dataset augmented rows are tagged and train-only
+# --------------------------------------------------------------------------- #
+def test_assemble_dataset_augmented_are_tagged_train_only(monkeypatch):
+    from ML_tradingAlgo.tft.augment import jitter_bars
+    from ML_tradingAlgo.data import labeler
+
+    event, bars = _synthetic_event_and_bars()
+    read = _make_augment_read(bars)
+
+    # Patch build_labeled_dataset on the labeler module (assemble imports it as _labeler)
+    monkeypatch.setattr(
+        labeler,
+        "build_labeled_dataset",
+        lambda *a, **k: pd.DataFrame([event]),
+    )
+
+    out = assemble.assemble_dataset(
+        ("2026-05-29", "2026-05-29"),
+        read_bars=read,
+        min_bars=35,
+        sequence_length=30,
+        augment=True,
+        n_augment=3,
+        bar_transforms=[lambda df: jitter_bars(df, sigma=0.02, rng=np.random.RandomState(1))],
+    )
+
+    assert "is_augmented" in out, "missing is_augmented key"
+    assert "parent_index" in out, "missing parent_index key"
+
+    n = len(out["is_augmented"])
+    assert n == 4, f"expected 4 samples (1 original + 3 augmented), got {n}"
+    assert int(out["is_augmented"].sum()) == 3
+
+    aug_positions = np.where(out["is_augmented"])[0]
+    for j in aug_positions:
+        p = out["parent_index"][j]
+        assert not out["is_augmented"][p], (
+            f"augmented sample at position {j} has parent_index {p} which is "
+            f"itself marked is_augmented=True"
+        )
