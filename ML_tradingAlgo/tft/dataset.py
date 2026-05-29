@@ -58,9 +58,9 @@ class TFTDataset(Dataset):
 
     When ``norm_stats`` is provided, temporal and static-continuous features are
     normalized per feature. The categorical feature is always returned as-is.
-    When ``augment`` is True, temporal features are perturbed on-the-fly in
-    ``__getitem__`` (training only): Gaussian noise, random time roll, and
-    random feature-column dropout.
+    When ``augment`` is True, optional feature-column dropout is applied in
+    ``__getitem__`` (off by default; bar-level augmentation and mixup now live
+    upstream in assembly and the train loop).
     """
 
     def __init__(self, temporal, static_continuous, static_categorical,

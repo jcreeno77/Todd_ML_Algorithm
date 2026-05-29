@@ -26,6 +26,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from .augment import mixup_batch
 from .dataset import TFTDataset, compute_normalization_stats
 from .model import TemporalFusionTransformer
 
@@ -265,6 +266,8 @@ def train_fold(train_ds, val_ds, model_config, fold_idx, output_dir,
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
     # Class imbalance weight from the training labels.
+    # NOTE: class weight intentionally uses the augmented train set (what the model sees);
+    # normalization above deliberately uses originals-only.
     pos_weight = compute_class_pos_weight(train_ds.y_win)
 
     model = TemporalFusionTransformer(**model_config)
@@ -282,7 +285,6 @@ def train_fold(train_ds, val_ds, model_config, fold_idx, output_dir,
         for batch in train_loader:
             optimizer.zero_grad()
             if cfg.get("mixup_alpha", 0.0) and cfg["mixup_alpha"] > 0:
-                from .augment import mixup_batch
                 batch = mixup_batch(batch, alpha=cfg["mixup_alpha"])
             p_win, entry_offset, _ = model(
                 batch["temporal"],
