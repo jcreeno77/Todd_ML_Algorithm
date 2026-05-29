@@ -173,6 +173,11 @@ def reconcile_session(session_date) -> dict:
 # CLI
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> None:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
     parser = argparse.ArgumentParser(
         prog="python3 -m ML_tradingAlgo.data.reconcile",
         description="Reconcile teed live minute bars against authoritative Schwab bars.",

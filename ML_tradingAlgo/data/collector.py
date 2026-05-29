@@ -278,6 +278,14 @@ def _merge_fundamentals(symbol: str, asof_date: dt.date,
 # --------------------------------------------------------------------------- #
 def run_nightly(asof_date) -> dict:
     """Run the nightly collection for ``asof_date`` and return a summary dict."""
+    # Heads-up if the Schwab refresh token is near its 7-day hard expiry; this
+    # only logs (channel-agnostic), it never blocks the run.
+    try:
+        from ML_tradingAlgo.data.token_health import check_token_freshness
+        check_token_freshness()
+    except Exception:
+        pass
+
     asof = _to_date(asof_date)
     since = asof - dt.timedelta(days=UNIVERSE_LOOKBACK_DAYS)
 
@@ -466,6 +474,11 @@ def read_events(date_range=None) -> pd.DataFrame:
 # CLI
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> None:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
     parser = argparse.ArgumentParser(
         prog="python -m ML_tradingAlgo.data.collector",
         description="Run the nightly gap-up event collector.",

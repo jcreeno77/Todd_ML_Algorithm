@@ -237,6 +237,11 @@ def backfill_seed(
 # CLI
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> None:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
     parser = argparse.ArgumentParser(
         prog="python -m ML_tradingAlgo.data.backfill",
         description="Bootstrap the historical corpus from a curated seed list.",
