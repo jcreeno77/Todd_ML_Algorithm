@@ -48,3 +48,6 @@ Thumbs.db
 
 # Git worktrees
 .worktrees/
+
+# Model checkpoints (local artifacts; train.py output_dir)
+models/
