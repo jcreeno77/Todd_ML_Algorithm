@@ -90,8 +90,8 @@ class TestTemporalFeatures:
             vix_level=sample_static_data["vix_level"],
             sector_etf_return=sample_static_data["sector_etf_return"],
         )
-        assert features.shape[1] == 43, f"Expected 43 1-min features, got {features.shape[1]}"
-        assert len(TEMPORAL_1MIN_FEATURE_NAMES) == 43
+        assert features.shape[1] == 54, f"Expected 54 1-min features, got {features.shape[1]}"
+        assert len(TEMPORAL_1MIN_FEATURE_NAMES) == 54
 
     def test_5min_feature_count(self, sample_5min_bars, sample_static_data):
         features = compute_temporal_features_5min(
@@ -180,7 +180,7 @@ class TestBuildFeatureMatrix:
             static_data=sample_static_data,
             sequence_length=30,
         )
-        assert temporal.shape == (30, 52), f"Expected (30, 52), got {temporal.shape}"
+        assert temporal.shape == (30, 63), f"Expected (30, 63), got {temporal.shape}"
         assert static_cont.shape == (9,)
         assert static_cat.shape == (1,)
 
@@ -239,3 +239,75 @@ class TestVolumeFeatures:
         prof = build_intraday_volume_profile([bars])
         assert len(prof) == 390
         assert prof[0] == 1.0  # minute 0 -> first bar volume
+
+
+class TestPriceLevelFeatures:
+    NEW = [
+        "pm_high_dist_atr", "pm_low_dist_atr", "broke_pm_high",
+        "round_number_dist_atr", "or_high_dist_atr", "or_break_flag",
+        "anchored_vwap_dist_atr", "prior_close_dist_atr",
+        "prior_high_dist_atr", "gap_fill_progress", "ema_overextension_atr",
+    ]
+
+    def test_all_present_and_finite(self, sample_1min_bars):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        feats = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+            premarket_high=5.3, premarket_low=4.7, prior_close=4.5,
+            prior_day_high=5.0,
+        )
+        for name in self.NEW:
+            i = TEMPORAL_1MIN_FEATURE_NAMES.index(name)
+            assert np.all(np.isfinite(feats[:, i])), name
+
+    def test_broke_pm_high_is_binary(self, sample_1min_bars):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        feats = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+            premarket_high=5.0,
+        )
+        i = TEMPORAL_1MIN_FEATURE_NAMES.index("broke_pm_high")
+        assert set(np.unique(feats[:, i])).issubset({0.0, 1.0})
+
+    def test_neutral_when_inputs_missing(self, sample_1min_bars):
+        # No premarket/prior inputs -> features must still be finite (neutral).
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        feats = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        for name in ["pm_high_dist_atr", "prior_close_dist_atr", "gap_fill_progress"]:
+            i = TEMPORAL_1MIN_FEATURE_NAMES.index(name)
+            assert np.all(np.isfinite(feats[:, i])), name
+
+    def test_anchored_vwap_differs_from_cumulative_with_premarket(self):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        # 10 premarket bars (09:00-09:09) at a low price, then 20 regular-hours
+        # bars (09:30+) at a higher price. Anchored VWAP must ignore premarket.
+        pre = pd.date_range("2026-05-29 09:00", periods=10, freq="1min", tz="US/Eastern")
+        reg = pd.date_range("2026-05-29 09:30", periods=20, freq="1min", tz="US/Eastern")
+        idx = pre.append(reg)
+        price = np.concatenate([np.full(10, 4.0), np.full(20, 6.0)])
+        bars = pd.DataFrame({
+            "open": price, "high": price + 0.05, "low": price - 0.05,
+            "close": price, "volume": np.full(30, 10000.0),
+        }, index=idx)
+        feats = compute_temporal_features_1min(
+            bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        i_anc = TEMPORAL_1MIN_FEATURE_NAMES.index("anchored_vwap_dist_atr")
+        i_cum = TEMPORAL_1MIN_FEATURE_NAMES.index("vwap_distance_atr")
+        # On the last bar the two VWAPs must differ (anchored excludes the cheap
+        # premarket bars, so its VWAP is higher and the distance smaller).
+        assert not np.isclose(feats[-1, i_anc], feats[-1, i_cum])

@@ -71,6 +71,18 @@ TEMPORAL_1MIN_FEATURE_NAMES: list[str] = [
     "float_rotation",
     "log_dollar_volume",
     "intraday_rvol",
+    # Price levels (11)
+    "pm_high_dist_atr",
+    "pm_low_dist_atr",
+    "broke_pm_high",
+    "round_number_dist_atr",
+    "or_high_dist_atr",
+    "or_break_flag",
+    "anchored_vwap_dist_atr",
+    "prior_close_dist_atr",
+    "prior_high_dist_atr",
+    "gap_fill_progress",
+    "ema_overextension_atr",
 ]
 
 TEMPORAL_5MIN_FEATURE_NAMES: list[str] = [
@@ -268,6 +280,10 @@ def compute_temporal_features_1min(
     vix_level: Optional[float],
     sector_etf_return: Optional[float],
     intraday_volume_profile: Optional[np.ndarray] = None,
+    premarket_high: Optional[float] = None,
+    premarket_low: Optional[float] = None,
+    prior_close: Optional[float] = None,
+    prior_day_high: Optional[float] = None,
 ) -> np.ndarray:
     """Compute temporal features per 1-min bar.
 
@@ -281,9 +297,13 @@ def compute_temporal_features_1min(
         intraday_volume_profile: Optional length-390 array of typical volume
             per minute-of-day. When supplied, ``intraday_rvol`` is computed
             against this profile; otherwise falls back to ``rel_vol``.
+        premarket_high: Pre-market session high price.
+        premarket_low: Pre-market session low price.
+        prior_close: Prior day closing price.
+        prior_day_high: Prior day high price.
 
     Returns:
-        np.ndarray of shape (n_bars, 43).
+        np.ndarray of shape (n_bars, 54).
     """
     # Capture a minute-of-day timeline from the DatetimeIndex if present;
     # otherwise fall back to bar position (assume 1-min spacing from the open).
@@ -430,7 +450,51 @@ def compute_temporal_features_1min(
     tod_sin = pd.Series(np.sin(tod_angle))
     tod_cos = pd.Series(np.cos(tod_angle))
 
-    # Assemble all 40 features
+    # --- Price levels (11) ---
+    zeros = pd.Series(np.zeros(n))
+
+    pm_high_dist = (c - premarket_high) / atr_safe if premarket_high is not None else zeros.copy()
+    pm_low_dist = (c - premarket_low) / atr_safe if premarket_low is not None else zeros.copy()
+    broke_pm_high = (c > premarket_high).astype(float) if premarket_high is not None else zeros.copy()
+
+    nearest_half = (c / 0.5).round() * 0.5
+    round_number_dist = (c - nearest_half) / atr_safe
+
+    or_window = min(15, n)
+    or_high_val = float(h.iloc[:or_window].max())
+    or_high_dist = (c - or_high_val) / atr_safe
+    or_break_flag = (c > or_high_val).astype(float)
+
+    # Anchored VWAP from the first REGULAR-HOURS bar (>= 09:30 ET), excluding
+    # premarket bars -- distinct from the premarket-inclusive cumulative VWAP
+    # used by vwap_distance_atr. With no DatetimeIndex the mask is all-ones and
+    # this reduces to the cumulative VWAP.
+    if isinstance(bars.index, pd.DatetimeIndex):
+        raw_minute = bars.index.hour * 60 + bars.index.minute - (9 * 60 + 30)
+        reg_mask = pd.Series((raw_minute.to_numpy() >= 0).astype(float))
+    else:
+        reg_mask = pd.Series(np.ones(n))
+    tp = (h + l + c) / 3
+    cum_tp = (tp * v * reg_mask).cumsum()
+    cum_v = (v * reg_mask).cumsum().replace(0, np.nan)
+    anchored_vwap = (cum_tp / cum_v).bfill().fillna(c)
+    anchored_vwap_dist = (c - anchored_vwap) / atr_safe
+
+    prior_close_dist = (c - prior_close) / atr_safe if prior_close is not None else zeros.copy()
+    prior_high_dist = (c - prior_day_high) / atr_safe if prior_day_high is not None else zeros.copy()
+
+    if prior_close is not None and n > 0:
+        open0 = float(o.iloc[0])
+        gap = open0 - prior_close
+        gap_safe = gap if abs(gap) > 1e-8 else 1e-8
+        gap_fill_progress = ((open0 - c) / gap_safe).clip(-1.0, 2.0)
+    else:
+        gap_fill_progress = zeros.copy()
+
+    ema20 = _ema(c, 20)
+    ema_overextension = (c - ema20) / atr_safe
+
+    # Assemble all 54 features
     features = pd.DataFrame({
         TEMPORAL_1MIN_FEATURE_NAMES[0]: open_vwap,
         TEMPORAL_1MIN_FEATURE_NAMES[1]: high_vwap,
@@ -475,6 +539,17 @@ def compute_temporal_features_1min(
         "float_rotation": pd.Series(float_rotation),
         "log_dollar_volume": pd.Series(log_dollar_volume),
         "intraday_rvol": intraday_rvol.reset_index(drop=True),
+        "pm_high_dist_atr": pm_high_dist.reset_index(drop=True),
+        "pm_low_dist_atr": pm_low_dist.reset_index(drop=True),
+        "broke_pm_high": broke_pm_high.reset_index(drop=True),
+        "round_number_dist_atr": round_number_dist.reset_index(drop=True),
+        "or_high_dist_atr": or_high_dist.reset_index(drop=True),
+        "or_break_flag": or_break_flag.reset_index(drop=True),
+        "anchored_vwap_dist_atr": anchored_vwap_dist.reset_index(drop=True),
+        "prior_close_dist_atr": prior_close_dist.reset_index(drop=True),
+        "prior_high_dist_atr": prior_high_dist.reset_index(drop=True),
+        "gap_fill_progress": gap_fill_progress.reset_index(drop=True),
+        "ema_overextension_atr": ema_overextension.reset_index(drop=True),
     })
 
     # Fill any remaining NaN from warmup periods
@@ -649,7 +724,7 @@ def build_feature_matrix(
 
     Returns:
         Tuple of:
-          - temporal: (sequence_length, 52) — 43 1-min + 9 5-min features
+          - temporal: (sequence_length, 63) — 54 1-min + 9 5-min features
           - static_continuous: (9,)
           - static_categorical: (1,)
     """
@@ -662,6 +737,10 @@ def build_feature_matrix(
         vix_level=static_data.get("vix_level"),
         sector_etf_return=static_data.get("sector_etf_return"),
         intraday_volume_profile=static_data.get("intraday_volume_profile"),
+        premarket_high=static_data.get("premarket_high"),
+        premarket_low=static_data.get("premarket_low"),
+        prior_close=static_data.get("prior_close"),
+        prior_day_high=static_data.get("prior_day_high"),
     )
 
     # Compute 5-min temporal features (9)
@@ -683,7 +762,7 @@ def build_feature_matrix(
         idx_5min = min(i // 5, n_5min - 1)
         aligned_5min[i] = features_5min[idx_5min]
 
-    # Concatenate: 43 1-min + 9 5-min = 52 temporal features
+    # Concatenate: 54 1-min + 9 5-min = 63 temporal features
     temporal = np.concatenate([features_1min, aligned_5min], axis=1)
 
     # Take last sequence_length bars
