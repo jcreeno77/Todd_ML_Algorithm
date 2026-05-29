@@ -1,6 +1,6 @@
 """Feature engineering pipeline for TFT momentum trader.
 
-Computes all 55 features (8 static + 38 one-min temporal + 9 five-min aggregate)
+Computes all 59 features (10 static + 40 one-min temporal + 9 five-min aggregate)
 from raw OHLCV bar data. Single code path for training and inference.
 
 Legacy candle pressure formula preserved: (((close-low)-(high-close))/open*1000) * (vol/float*100)
@@ -64,6 +64,9 @@ TEMPORAL_1MIN_FEATURE_NAMES: list[str] = [
     "candle_pressure_weighted",
     "candle_pressure_unweighted",
     "candle_pressure_squared",
+    # Time encoding (2)
+    "tod_sin",
+    "tod_cos",
 ]
 
 TEMPORAL_5MIN_FEATURE_NAMES: list[str] = [
@@ -86,6 +89,8 @@ STATIC_CONTINUOUS_FEATURE_NAMES: list[str] = [
     "high_52wk_ratio",
     "low_52wk_ratio",
     "premarket_range",
+    "dow_sin",
+    "dow_cos",
 ]
 
 
@@ -243,10 +248,20 @@ def compute_temporal_features_1min(
         sector_etf_return: Sector ETF session return (scalar).
 
     Returns:
-        np.ndarray of shape (n_bars, 38).
+        np.ndarray of shape (n_bars, 40).
     """
+    # Capture a minute-of-day timeline from the DatetimeIndex if present;
+    # otherwise fall back to bar position (assume 1-min spacing from the open).
+    if isinstance(bars.index, pd.DatetimeIndex):
+        idx = bars.index
+        minute_of_day = (idx.hour * 60 + idx.minute - (9 * 60 + 30)).to_numpy(dtype=float)
+        minute_of_day = np.clip(minute_of_day, 0, 389)
+    else:
+        minute_of_day = np.arange(len(bars), dtype=float)
+
     df = bars.copy().reset_index(drop=True)
     n = len(df)
+    minute_of_day = minute_of_day[:n]
 
     o, h, l, c, v = df["open"], df["high"], df["low"], df["close"], df["volume"]
 
@@ -360,7 +375,12 @@ def compute_temporal_features_1min(
     # --- Legacy Core Signal (3) ---
     legacy = _compute_legacy_candle_pressure_series(df, float_shares)
 
-    # Assemble all 38 features
+    # --- Time encoding (2) ---
+    tod_angle = 2.0 * np.pi * (minute_of_day / 390.0)
+    tod_sin = pd.Series(np.sin(tod_angle))
+    tod_cos = pd.Series(np.cos(tod_angle))
+
+    # Assemble all 40 features
     features = pd.DataFrame({
         TEMPORAL_1MIN_FEATURE_NAMES[0]: open_vwap,
         TEMPORAL_1MIN_FEATURE_NAMES[1]: high_vwap,
@@ -400,6 +420,8 @@ def compute_temporal_features_1min(
         TEMPORAL_1MIN_FEATURE_NAMES[35]: legacy["weighted"],
         TEMPORAL_1MIN_FEATURE_NAMES[36]: legacy["unweighted"],
         TEMPORAL_1MIN_FEATURE_NAMES[37]: legacy["squared"],
+        TEMPORAL_1MIN_FEATURE_NAMES[38]: tod_sin,
+        TEMPORAL_1MIN_FEATURE_NAMES[39]: tod_cos,
     })
 
     # Fill any remaining NaN from warmup periods
@@ -493,12 +515,13 @@ def compute_static_features(
     premarket_low: float,
     current_price: float,
     prior_close: float,
+    session_date=None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute static features.
 
     Returns:
-        Tuple of (continuous_features [7], categorical_features [1]).
+        Tuple of (continuous_features [9], categorical_features [1]).
     """
     # 1. float_shares (log-scaled)
     float_log = np.log(max(float_shares, 1))
@@ -526,6 +549,16 @@ def compute_static_features(
     pm_low_ratio = premarket_low / prior_safe - 1
     premarket_range = pm_high_ratio + pm_low_ratio
 
+    # day-of-week cyclical encoding (neutral 0,0 when unavailable)
+    dow_sin = 0.0
+    dow_cos = 0.0
+    if session_date is not None:
+        d = pd.Timestamp(session_date)
+        if not pd.isna(d):
+            angle = 2.0 * np.pi * (d.weekday() / 7.0)
+            dow_sin = float(np.sin(angle))
+            dow_cos = float(np.cos(angle))
+
     continuous = np.array([
         float_log,
         si_ratio,
@@ -534,6 +567,8 @@ def compute_static_features(
         high_52wk_ratio,
         low_52wk_ratio,
         premarket_range,
+        dow_sin,
+        dow_cos,
     ], dtype=np.float64)
 
     categorical = np.array([sector_id], dtype=np.int64)
@@ -561,8 +596,8 @@ def build_feature_matrix(
 
     Returns:
         Tuple of:
-          - temporal: (sequence_length, 47) — 38 1-min + 9 5-min features
-          - static_continuous: (7,)
+          - temporal: (sequence_length, 49) — 40 1-min + 9 5-min features
+          - static_continuous: (9,)
           - static_categorical: (1,)
     """
     # Compute 1-min temporal features (38)

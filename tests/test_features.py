@@ -90,8 +90,8 @@ class TestTemporalFeatures:
             vix_level=sample_static_data["vix_level"],
             sector_etf_return=sample_static_data["sector_etf_return"],
         )
-        assert features.shape[1] == 38, f"Expected 38 1-min features, got {features.shape[1]}"
-        assert len(TEMPORAL_1MIN_FEATURE_NAMES) == 38
+        assert features.shape[1] == 40, f"Expected 40 1-min features, got {features.shape[1]}"
+        assert len(TEMPORAL_1MIN_FEATURE_NAMES) == 40
 
     def test_5min_feature_count(self, sample_5min_bars, sample_static_data):
         features = compute_temporal_features_5min(
@@ -117,14 +117,59 @@ class TestTemporalFeatures:
 class TestStaticFeatures:
     def test_static_feature_count(self, sample_static_data):
         continuous, categorical = compute_static_features(**sample_static_data)
-        assert continuous.shape == (7,)
+        assert continuous.shape == (9,)
         assert categorical.shape == (1,)
-        assert len(STATIC_CONTINUOUS_FEATURE_NAMES) == 7
+        assert len(STATIC_CONTINUOUS_FEATURE_NAMES) == 9
 
     def test_float_is_log_scaled(self, sample_static_data):
         continuous, _ = compute_static_features(**sample_static_data)
         expected = np.log(sample_static_data["float_shares"])
         assert abs(continuous[0] - expected) < 1e-6
+
+
+class TestTimeFeatures:
+    def test_tod_features_present_and_bounded(self, sample_1min_bars):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        feats = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=2_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        assert feats.shape[1] == len(TEMPORAL_1MIN_FEATURE_NAMES)
+        i_sin = TEMPORAL_1MIN_FEATURE_NAMES.index("tod_sin")
+        i_cos = TEMPORAL_1MIN_FEATURE_NAMES.index("tod_cos")
+        assert np.all(np.abs(feats[:, i_sin]) <= 1.0 + 1e-6)
+        assert np.all(np.abs(feats[:, i_cos]) <= 1.0 + 1e-6)
+
+    def test_tod_uses_datetime_index_when_present(self):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        idx = pd.date_range("2026-05-29 09:30", periods=20, freq="1min", tz="US/Eastern")
+        bars = pd.DataFrame({
+            "open": np.linspace(5, 5.2, 20), "high": np.linspace(5.05, 5.25, 20),
+            "low": np.linspace(4.95, 5.15, 20), "close": np.linspace(5, 5.2, 20),
+            "volume": np.full(20, 10000),
+        }, index=idx)
+        feats = compute_temporal_features_1min(
+            bars, float_shares=2_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        i_sin = TEMPORAL_1MIN_FEATURE_NAMES.index("tod_sin")
+        # First bar at 09:30 -> minute 0 -> sin(0) == 0.
+        assert abs(feats[0, i_sin]) < 1e-6
+
+    def test_dow_features_present(self, sample_static_data):
+        from ML_tradingAlgo.tft.features import (
+            compute_static_features, STATIC_CONTINUOUS_FEATURE_NAMES,
+        )
+        data = dict(sample_static_data)
+        data["session_date"] = "2026-05-29"  # a Friday (weekday 4)
+        cont, cat = compute_static_features(**data)
+        assert cont.shape[0] == len(STATIC_CONTINUOUS_FEATURE_NAMES)
+        i_sin = STATIC_CONTINUOUS_FEATURE_NAMES.index("dow_sin")
+        assert -1.0 - 1e-6 <= cont[i_sin] <= 1.0 + 1e-6
 
 
 class TestBuildFeatureMatrix:
@@ -135,6 +180,6 @@ class TestBuildFeatureMatrix:
             static_data=sample_static_data,
             sequence_length=30,
         )
-        assert temporal.shape == (30, 47), f"Expected (30, 47), got {temporal.shape}"
-        assert static_cont.shape == (7,)
+        assert temporal.shape == (30, 49), f"Expected (30, 49), got {temporal.shape}"
+        assert static_cont.shape == (9,)
         assert static_cat.shape == (1,)
