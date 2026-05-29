@@ -18,6 +18,9 @@ boto3
 streamlit
 plotly
 
+# --- Interpretability plots ---
+matplotlib
+
 # --- Test-only ---
 moto[s3]
 responses
