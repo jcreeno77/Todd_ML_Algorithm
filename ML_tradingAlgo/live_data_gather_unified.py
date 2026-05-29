@@ -21,6 +21,18 @@ trade_amount = 25
 # Instance ID determines CSV filename (e.g. DataToPredict1.csv, DataToPredict2.csv)
 instance_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
 
+# Optional non-blocking warehouse tee. Guarded so the trading loop is completely
+# unaffected if S3 / the tee is unconfigured or fails to construct: on any error
+# tee stays None and every `if tee:` call site below is a no-op.
+tee = None
+try:
+    from ML_tradingAlgo.data.tee import LiveTee
+    tee = LiveTee(instance_id)
+    tee.start()
+except Exception as _tee_exc:  # noqa: BLE001 - never let the tee break trading
+    print(f"LiveTee disabled: {_tee_exc}")
+    tee = None
+
 
 def main():
 
@@ -203,6 +215,8 @@ def main():
             all_OneMinCandles.append(temp_OneMinCandle)
             print(all_OneMinCandles)
 
+            if tee: tee.put_candle(ticker, temp_OneMinCandle, "1min", None)
+
 
             #cancel if stock falls too low
             currentCandleOpen = all_OneMinCandles[-1][0]
@@ -243,6 +257,8 @@ def main():
 
             all_FiveMinCandles.append(temp_FiveMinCandle) #1open, 2high, 3low, 4close, 5volume
             print(all_FiveMinCandles)
+
+            if tee: tee.put_candle(ticker, temp_FiveMinCandle, "5min", None)
 
             #resets the candle
             fiveMinContent = []
