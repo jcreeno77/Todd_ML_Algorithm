@@ -20,6 +20,7 @@ The schwab-py client is cached at module level.
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 import time
 from zoneinfo import ZoneInfo
@@ -35,6 +36,8 @@ __all__ = [
     "get_daily_bars",
     "get_fundamentals",
     "get_quote_snapshot",
+    "get_live_quote",
+    "get_prior_close",
 ]
 
 _ET = ZoneInfo("America/New_York")
@@ -274,3 +277,43 @@ def get_quote_snapshot(symbols: list[str]) -> pd.DataFrame:
     )
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     return df
+
+
+# --------------------------------------------------------------------------- #
+# Public API: single-symbol live helpers
+# --------------------------------------------------------------------------- #
+def get_live_quote(symbol: str) -> dict:
+    """Lightweight single-symbol live quote for the trading loop.
+
+    Returns a plain dict with the four fields the live loop needs::
+
+        {"last_price": float, "total_volume": int,
+         "high_52wk": float, "low_52wk": float}
+
+    Fields are parsed from the Schwab ``get_quotes`` payload under
+    ``<SYMBOL>.quote`` (``lastPrice``, ``totalVolume``, ``52WeekHigh``,
+    ``52WeekLow``). Missing keys yield ``None`` rather than raising.
+    """
+    client = _get_client()
+    response = _request_with_retry(client.get_quotes, [symbol])
+    payload = response.json() or {}
+
+    quote = (payload.get(symbol) or {}).get("quote", {})
+    return {
+        "last_price": quote.get("lastPrice"),
+        "total_volume": quote.get("totalVolume"),
+        "high_52wk": quote.get("52WeekHigh"),
+        "low_52wk": quote.get("52WeekLow"),
+    }
+
+
+def get_prior_close(symbol: str) -> float:
+    """Most recent daily close for ``symbol``.
+
+    Reuses :func:`get_daily_bars` over a short recent window (the last ~7
+    calendar days up to today) and returns the last row's ``close`` as a float.
+    """
+    end = dt.datetime.now(dt.timezone.utc)
+    start = end - dt.timedelta(days=7)
+    bars = get_daily_bars(symbol, start, end)
+    return float(bars["close"].iloc[-1])

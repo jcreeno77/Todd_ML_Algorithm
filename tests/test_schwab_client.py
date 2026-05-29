@@ -100,6 +100,8 @@ def fake_client():
                     "bidPrice": 187.4,
                     "askPrice": 187.6,
                     "totalVolume": 45_000_000,
+                    "52WeekHigh": 199.62,
+                    "52WeekLow": 124.17,
                 },
             }
         }
@@ -380,6 +382,56 @@ def test_quote_snapshot_ts_is_utc(patch_client):
     ts = df["ts"].iloc[0]
     assert ts.tzinfo is not None
     assert str(df["ts"].dt.tz) == "UTC"
+
+
+# --------------------------------------------------------------------------- #
+# get_live_quote
+# --------------------------------------------------------------------------- #
+def test_live_quote_maps_fields(patch_client):
+    q = schwab_client.get_live_quote("AAPL")
+    assert q == {
+        "last_price": 187.5,
+        "total_volume": 45_000_000,
+        "high_52wk": 199.62,
+        "low_52wk": 124.17,
+    }
+
+
+def test_live_quote_tolerates_missing_52wk(patch_client):
+    patch_client.get_quotes.return_value = FakeResponse(
+        {
+            "AAPL": {
+                "symbol": "AAPL",
+                "quote": {
+                    "lastPrice": 187.5,
+                    "totalVolume": 45_000_000,
+                    # 52WeekHigh present, 52WeekLow absent
+                    "52WeekHigh": 199.62,
+                },
+            }
+        }
+    )
+    q = schwab_client.get_live_quote("AAPL")
+    assert q["last_price"] == 187.5
+    assert q["total_volume"] == 45_000_000
+    assert q["high_52wk"] == 199.62
+    assert q["low_52wk"] is None
+
+
+# --------------------------------------------------------------------------- #
+# get_prior_close
+# --------------------------------------------------------------------------- #
+def test_prior_close_returns_last_daily_close(patch_client, monkeypatch):
+    frame = pd.DataFrame(
+        {
+            "session_date": [dt.date(2024, 1, 2), dt.date(2024, 1, 3)],
+            "symbol": ["AAPL", "AAPL"],
+            "close": [101.0, 205.5],
+        }
+    )
+    monkeypatch.setattr(schwab_client, "get_daily_bars", lambda *a, **k: frame)
+    assert schwab_client.get_prior_close("AAPL") == 205.5
+    assert isinstance(schwab_client.get_prior_close("AAPL"), float)
 
 
 # --------------------------------------------------------------------------- #
