@@ -256,3 +256,17 @@ def test_split_augmented_train_only():
     assert set(train_idx.tolist()) == {0, 1, 2}
     assert set(val_idx.tolist()) == {3}
     assert not is_aug[val_idx].any()
+
+
+def test_split_augmented_child_of_val_parent_excluded():
+    from ML_tradingAlgo.tft.train import split_originals_and_augmented
+    # originals at 0 (train) and 3 (val); rows 1,2 are children of 0; rows 4,5 children of 3
+    is_aug = np.array([False, True, True, False, True, True])
+    parent = np.array([0, 0, 0, 3, 3, 3])
+    train_idx, val_idx = split_originals_and_augmented(np.array([0]), np.array([3]), is_aug, parent)
+    assert set(train_idx.tolist()) == {0, 1, 2}      # train original + its children only
+    assert set(val_idx.tolist()) == {3}              # val original ONLY
+    # children of the val parent (4,5) appear in NEITHER set
+    assert 4 not in train_idx and 5 not in train_idx
+    assert 4 not in val_idx and 5 not in val_idx
+    assert not is_aug[val_idx].any()
