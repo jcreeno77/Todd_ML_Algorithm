@@ -8,3 +8,18 @@ python-dotenv
 selenium
 webdriver-manager
 chromedriver-py
+
+# --- TFT data pipeline (Schwab + S3 + fundamentals) ---
+schwab-py
+pyarrow
+s3fs
+boto3
+
+# --- Dashboards ---
+streamlit
+plotly
+
+# --- Test-only ---
+moto[s3]
+responses
+vcrpy

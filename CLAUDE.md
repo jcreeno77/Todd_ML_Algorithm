@@ -59,3 +59,15 @@ for f in ML_tradingAlgo/*.py; do python -c "import ast; ast.parse(open('$f').rea
 - The PyTorch model weights (`current_weights`, `current_weights_2wk`) need retraining — legacy TF weights are incompatible
 - `live_data_gather.py` (without suffix) is a simpler data-gathering-only tool with no trading logic — keep it separate from the unified trading module
 - The `tda-api` library handles OAuth 2.0 with token refresh via `token.pickle` — Schwab migration is planned per the project spec
+
+## Cost Discipline (AWS) — IMPORTANT
+
+This is a **personal project on a tight budget**. Keep cloud spend minimal. Treat every AWS design choice through a cost lens:
+
+- **S3 is the only AWS service we use.** Do NOT introduce paid managed services (DynamoDB, RDS, Athena, Glue, SageMaker, MSK, etc.) without explicit sign-off — there is almost always a free local/in-process alternative (e.g. watermarks are per-symbol JSON in S3, not DynamoDB; training runs locally, not SageMaker).
+- **Watch request counts, not just storage.** S3 cost here is dominated by GET/PUT request volume from many small Parquet files, not bytes stored. Prefer batched writes (the live tee already batches); the deferred weekly compaction job is the first lever if training reads get expensive.
+- **Never do O(n²) S3 access patterns.** Known hotspot: per-date full-table reads (e.g. ADV recomputation in `collector`/`backfill`) scale quadratically over long windows — compute once per symbol and reuse. Be especially careful in any multi-year backfill.
+- **Lifecycle + storage class.** Old/cold partitions should move to cheaper storage (S3 Infrequent Access / Glacier) or expire via a lifecycle policy. Raw bars compress well; don't store recomputable features.
+- **Stay in one region, no cross-region transfer, no inter-AZ chatter.** Avoid data egress.
+- **Tag/scope the IAM key to just this project's bucket** (least privilege) — limits blast radius and accidental spend.
+- When proposing anything cloud-touching, **state the rough cost impact** in the plan/PR so it's a conscious decision.
