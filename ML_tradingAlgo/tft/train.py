@@ -37,10 +37,26 @@ TRAIN_CONFIG = {
     "grad_clip": 1.0,
     "bce_weight": 0.7,
     "mse_weight": 0.3,
-    "augment_noise_std": 0.001,
-    "augment_time_shift": 2,
-    "augment_feature_dropout": 0.1,
+    "mixup_alpha": 0.3,
 }
+
+
+def split_originals_and_augmented(train_orig, val_orig, is_augmented, parent_index):
+    """Expand original train indices with their augmented children; keep val pure.
+
+    train_orig / val_orig index into ORIGINAL samples only. Returns (train_idx,
+    val_idx) into the full (original+augmented) arrays: train includes every
+    augmented row whose parent_index is in train_orig; val contains only the
+    original validation rows.
+    """
+    train_orig_set = set(int(i) for i in train_orig)
+    val_idx = np.asarray(sorted(int(i) for i in val_orig), dtype=np.int64)
+    train_list = list(train_orig_set)
+    for j in np.where(np.asarray(is_augmented, dtype=bool))[0]:
+        if int(parent_index[j]) in train_orig_set:
+            train_list.append(int(j))
+    train_idx = np.asarray(sorted(set(train_list)), dtype=np.int64)
+    return train_idx, val_idx
 
 
 def create_walk_forward_folds(session_dates, num_folds=4):
@@ -265,6 +281,9 @@ def train_fold(train_ds, val_ds, model_config, fold_idx, output_dir,
         model.train()
         for batch in train_loader:
             optimizer.zero_grad()
+            if cfg.get("mixup_alpha", 0.0) and cfg["mixup_alpha"] > 0:
+                from .augment import mixup_batch
+                batch = mixup_batch(batch, alpha=cfg["mixup_alpha"])
             p_win, entry_offset, _ = model(
                 batch["temporal"],
                 batch["static_continuous"],
@@ -329,19 +348,37 @@ def train_all_folds(assembled, model_config, output_dir, num_folds=4,
     sample_weights = np.asarray(assembled["sample_weights"], dtype=np.float32).reshape(-1)
     session_dates = assembled["session_dates"]
 
-    augment_cfg = {
-        "noise_std": cfg["augment_noise_std"],
-        "time_shift": cfg["augment_time_shift"],
-        "feature_dropout": cfg["augment_feature_dropout"],
-    }
+    # Support datasets that include augmented children alongside originals.
+    # Safe fallback: treat all rows as originals with identity parent mapping.
+    is_augmented = np.asarray(
+        assembled.get("is_augmented", np.zeros(len(y_win), dtype=bool)),
+        dtype=bool,
+    )
+    parent_index = np.asarray(
+        assembled.get("parent_index", np.arange(len(y_win))),
+        dtype=np.int64,
+    )
 
-    folds = create_walk_forward_folds(session_dates, num_folds=num_folds)
+    # Build walk-forward folds on ORIGINALS ONLY to avoid leaking augmented
+    # children into validation and to keep fold boundaries clean.
+    orig_pos = np.where(~is_augmented)[0]
+    orig_dates = [session_dates[i] for i in orig_pos]
+    orig_folds = create_walk_forward_folds(orig_dates, num_folds=num_folds)
 
     all_metrics = []
-    for fold_idx, (train_idx, val_idx) in enumerate(folds):
-        # Fit normalization on the TRAIN split ONLY.
+    for fold_idx, (tr_rel, va_rel) in enumerate(orig_folds):
+        # Map relative-to-orig_pos indices back to full-array positions.
+        train_orig = orig_pos[tr_rel]
+        val_orig = orig_pos[va_rel]
+
+        # Expand training set with augmented children; val stays pure originals.
+        train_idx, val_idx = split_originals_and_augmented(
+            train_orig, val_orig, is_augmented, parent_index
+        )
+
+        # Fit normalization stats on ORIGINAL train samples only (no leakage).
         train_stats = compute_normalization_stats(
-            temporal[train_idx], static_continuous[train_idx]
+            temporal[train_orig], static_continuous[train_orig]
         )
 
         train_ds = TFTDataset(
@@ -352,8 +389,7 @@ def train_all_folds(assembled, model_config, output_dir, num_folds=4,
             y_offset[train_idx],
             sample_weights[train_idx],
             norm_stats=train_stats,
-            augment=True,
-            augment_cfg=augment_cfg,
+            augment=False,
         )
         val_ds = TFTDataset(
             temporal[val_idx],

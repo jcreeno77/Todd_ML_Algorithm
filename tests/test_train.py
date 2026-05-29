@@ -244,3 +244,15 @@ def test_evaluate_perfect_predictions():
     loader = DataLoader(ds, batch_size=8)
     metrics = evaluate(_PerfectModel(), loader)
     assert metrics["win_rate"] == 1.0
+
+
+def test_split_augmented_train_only():
+    from ML_tradingAlgo.tft.train import split_originals_and_augmented
+    is_aug = np.array([False, True, True, False, True])
+    parent = np.array([0, 0, 0, 3, 3])
+    train_orig = np.array([0])
+    val_orig = np.array([3])
+    train_idx, val_idx = split_originals_and_augmented(train_orig, val_orig, is_aug, parent)
+    assert set(train_idx.tolist()) == {0, 1, 2}
+    assert set(val_idx.tolist()) == {3}
+    assert not is_aug[val_idx].any()
