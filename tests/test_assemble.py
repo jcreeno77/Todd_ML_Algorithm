@@ -396,10 +396,16 @@ def _synthetic_event_and_bars():
     return event, bars
 
 
-def _make_augment_read(bars):
-    """Return a read_bars callable that serves ``bars`` for bars_minute queries."""
+def _make_augment_read(bars, counter=None):
+    """Return a read_bars callable that serves ``bars`` for bars_minute queries.
+
+    If ``counter`` (a one-element mutable list) is supplied, each ``bars_minute``
+    read increments ``counter[0]`` so callers can assert read volume.
+    """
     def _read(table, symbol=None, date_range=None, source=None, dedupe_keys=None):
         if table == "bars_minute":
+            if counter is not None:
+                counter[0] += 1
             return bars.copy()
         raise AssertionError(f"unexpected table {table!r}")
     return _read
@@ -470,3 +476,93 @@ def test_assemble_dataset_augmented_are_tagged_train_only(monkeypatch):
             f"augmented sample at position {j} has parent_index {p} which is "
             f"itself marked is_augmented=True"
         )
+
+
+# --------------------------------------------------------------------------- #
+# Task-9 FIX 1: exactly ONE S3 read per event regardless of n_augment
+# --------------------------------------------------------------------------- #
+def test_assemble_dataset_reads_bars_once_per_event(monkeypatch):
+    from ML_tradingAlgo.tft.augment import jitter_bars
+    from ML_tradingAlgo.data import labeler
+
+    event, bars = _synthetic_event_and_bars()
+    counter = [0]
+    read = _make_augment_read(bars, counter=counter)
+
+    monkeypatch.setattr(
+        labeler, "build_labeled_dataset", lambda *a, **k: pd.DataFrame([event])
+    )
+
+    out = assemble.assemble_dataset(
+        ("2026-05-29", "2026-05-29"),
+        read_bars=read,
+        min_bars=35,
+        sequence_length=30,
+        augment=True,
+        n_augment=3,
+        bar_transforms=[lambda df: jitter_bars(df, sigma=0.02, rng=np.random.RandomState(1))],
+    )
+
+    # One event + 3 augments must cost exactly ONE bars_minute read.
+    assert counter[0] == 1, f"expected exactly 1 S3 read, got {counter[0]}"
+    # And we still produced the original + 3 augmented rows.
+    assert len(out["is_augmented"]) == 4
+    assert int(out["is_augmented"].sum()) == 3
+
+
+# --------------------------------------------------------------------------- #
+# Task-9 FIX 2: length-changing transform is skipped, not fatal
+# --------------------------------------------------------------------------- #
+def test_assemble_dataset_length_mismatch_is_skipped(monkeypatch):
+    from ML_tradingAlgo.data import labeler
+
+    event, bars = _synthetic_event_and_bars()
+    read = _make_augment_read(bars)
+
+    monkeypatch.setattr(
+        labeler, "build_labeled_dataset", lambda *a, **k: pd.DataFrame([event])
+    )
+
+    # A length-changing transform must not abort the run.
+    out = assemble.assemble_dataset(
+        ("2026-05-29", "2026-05-29"),
+        read_bars=read,
+        min_bars=35,
+        sequence_length=30,
+        augment=True,
+        n_augment=2,
+        bar_transforms=[lambda df: df.iloc[:-5]],
+    )
+
+    # Original survives; every (length-mismatched) augmented variant is skipped.
+    assert len(out["is_augmented"]) == 1
+    assert int(out["is_augmented"].sum()) == 0
+    assert bool(out["is_augmented"][0]) is False
+
+
+# --------------------------------------------------------------------------- #
+# Task-9 FIX 3: empty bar_transforms does not emit identity duplicates
+# --------------------------------------------------------------------------- #
+def test_assemble_dataset_empty_transforms_no_duplicates(monkeypatch):
+    from ML_tradingAlgo.data import labeler
+
+    event, bars = _synthetic_event_and_bars()
+    read = _make_augment_read(bars)
+
+    monkeypatch.setattr(
+        labeler, "build_labeled_dataset", lambda *a, **k: pd.DataFrame([event])
+    )
+
+    out = assemble.assemble_dataset(
+        ("2026-05-29", "2026-05-29"),
+        read_bars=read,
+        min_bars=35,
+        sequence_length=30,
+        augment=True,
+        n_augment=3,
+        bar_transforms=None,
+    )
+
+    # No transforms -> only the original, no identity-duplicated rows.
+    assert len(out["is_augmented"]) == 1
+    assert int(out["is_augmented"].sum()) == 0
