@@ -54,9 +54,13 @@ import pandas as pd
 from ML_tradingAlgo.data import labeler as _labeler
 from ML_tradingAlgo.data import fundamentals as _fundamentals
 from ML_tradingAlgo.tft import features as _features
+from ML_tradingAlgo.tft.augment import _OHLC
 
 
 _DAYS_PER_MONTH = 30.44
+
+# OHLCV columns a bar_transform sees / writes back, positionally.
+_OHLCV = _OHLC + ["volume"]
 
 
 # --------------------------------------------------------------------------- #
@@ -295,8 +299,14 @@ def _assemble_event_with_reason(
 
     ``bar_transform`` — optional callable applied to the raw OHLCV bars after
     the DatetimeIndex is set and BEFORE entry detection / feature engineering.
-    Must be length- and index-preserving (contract enforced by re-assigning the
-    original index after transformation).
+    Must be length-preserving; alignment is positional. A length-changing
+    transform is rejected as a failed assembly (reason
+    ``"bar_transform_length_mismatch"``) rather than crashing the run.
+
+    This reads ``bars_minute`` from the store exactly ONCE, then delegates the
+    post-load assembly to :func:`_assemble_from_bars`. Callers that already hold
+    the loaded frame (e.g. the augment loop) call ``_assemble_from_bars``
+    directly to avoid re-reading S3.
     """
     if hasattr(event_row, "to_dict"):
         event_row = event_row.to_dict()
@@ -316,6 +326,55 @@ def _assemble_event_with_reason(
     if bars is None or len(bars) == 0:
         return None, "no_bars"
 
+    return _assemble_from_bars(
+        event_row,
+        bars,
+        bar_transform=bar_transform,
+        tp_pct=tp_pct,
+        sl_pct=sl_pct,
+        lookahead_bars=lookahead_bars,
+        sequence_length=sequence_length,
+        min_bars=min_bars,
+        fundamentals_lookup=fundamentals_lookup,
+        spy_bars=spy_bars,
+    )
+
+
+def _assemble_from_bars(
+    event_row,
+    bars,
+    *,
+    bar_transform=None,
+    tp_pct: float = 3.0,
+    sl_pct: float = 3.0,
+    lookahead_bars: int = 30,
+    sequence_length: int = 30,
+    min_bars: int = 35,
+    fundamentals_lookup=None,
+    spy_bars=None,
+) -> tuple[dict | None, str | None]:
+    """Post-load assembly: given already-read ``bars`` for one event, build a
+    sample. Does NOT touch the store, so it can be re-run for every augmented
+    variant of an event from a single S3 read.
+
+    ``bars`` is defensively copied at the top so the caller's frame is never
+    mutated and each ``bar_transform`` starts from clean bars.
+
+    ``bar_transform`` — optional callable applied to the raw OHLCV bars after
+    the DatetimeIndex is set and BEFORE entry detection / feature engineering.
+    It must return a length-preserving frame; columns are written back BY
+    POSITION. A length mismatch returns ``(None, "bar_transform_length_mismatch")``
+    so the dataset loop's None-skip handles it gracefully.
+    """
+    if hasattr(event_row, "to_dict"):
+        event_row = event_row.to_dict()
+
+    # Never mutate the caller's frame; each variant starts from clean bars.
+    bars = bars.copy()
+
+    symbol = event_row.get("symbol")
+    session_date = event_row.get("session_date")
+
     # --- one-pass: sort by ts and install a DatetimeIndex --------------------
     if "ts" not in bars.columns:
         return None, "no_ts"
@@ -324,9 +383,11 @@ def _assemble_event_with_reason(
 
     # --- optional bar-level augmentation (applied to raw bars BEFORE features)
     if bar_transform is not None:
-        transformed = bar_transform(bars[["open", "high", "low", "close", "volume"]])
-        transformed.index = bars.index  # enforce length-preserving contract
-        for col in ["open", "high", "low", "close", "volume"]:
+        transformed = bar_transform(bars[_OHLCV])
+        # Enforce the length-preserving contract; alignment is positional.
+        if len(transformed) != len(bars):
+            return None, "bar_transform_length_mismatch"
+        for col in _OHLCV:
             bars[col] = transformed[col].to_numpy()
 
     entry_idx = _labeler._first_regular_hours_idx(bars)
@@ -414,18 +475,28 @@ def assemble_dataset(
 
     Augmentation (train-only):
         When ``augment=True`` and ``n_augment > 0``, each successfully assembled
-        original sample is followed immediately by ``n_augment`` augmented copies
-        produced by re-running ``_assemble_event_with_reason`` with a
-        ``bar_transform`` chosen from ``bar_transforms``. Augmented samples are
+        original sample is followed immediately by up to ``n_augment`` augmented
+        copies produced by re-running the post-load assembly
+        (:func:`_assemble_from_bars`) on the SAME bars with a ``bar_transform``
+        chosen from ``bar_transforms``. Bars are read from the store exactly ONCE
+        per event and reused for the original and every augmented variant, so
+        ``n_augment`` does not multiply S3 read volume. Augmented samples are
         tagged with ``is_augmented=True`` and ``parent_index`` pointing to the
         position of their original sample in the stacked arrays. Original samples
         have ``is_augmented=False`` and ``parent_index`` equal to their own
-        position.
+        position. A variant whose transform fails the length contract is skipped
+        (no row, no dangling parent slot).
 
-        ``bar_transforms`` — list of callables (one is chosen per augmentation,
-        cycling when ``n_augment > len(bar_transforms)``); when ``None``/empty an
-        identity pass-through is used. ``augment_rng`` — ``np.random.RandomState``
-        for transform selection; a fresh one is created when ``None``.
+        ``bar_transforms`` — list of callables (one is chosen per augmentation).
+        When falsy/empty, augmentation is SKIPPED for that event (treated as
+        ``n_augment=0``) rather than emitting degenerate identity duplicates.
+
+        ``augment_rng`` — ``np.random.RandomState`` governing only transform
+        SELECTION among ``bar_transforms`` (a single default generator is created
+        once for the whole run when ``None``). Each transform owns its own
+        perturbation RNG (e.g. ``lambda df: jitter_bars(df, rng=...)``); for fully
+        reproducible augmentation the caller must seed the RNGs inside the
+        transforms in addition to passing ``augment_rng`` for selection.
 
     Returns::
 
@@ -473,6 +544,10 @@ def assemble_dataset(
     if events is None or len(events) == 0:
         return _empty_dataset(sequence_length)
 
+    # Default selection RNG constructed ONCE so a single (unseeded) generator
+    # spans all events rather than being re-seeded per event.
+    _select_rng = augment_rng if augment_rng is not None else np.random.RandomState()
+
     # day_of_run: count consecutive prior session_dates for the same symbol.
     _run_map: dict = {}
     if events is not None and len(events):
@@ -502,14 +577,29 @@ def assemble_dataset(
         if spy_lookup is not None:
             spy_bars = spy_lookup(session_date)
 
-        result, reason = _assemble_event_with_reason(
+        # float guard up front so we never spend an S3 read on a no-float event.
+        float_shares = event_row.get("float_shares")
+        if float_shares is None or _finite(float_shares, default=0.0) == 0.0:
+            skipped.append((symbol, session_date, "no_float"))
+            continue
+
+        # --- ONE S3 read per event; reused for original + every augment ------
+        base_bars = rb(
+            "bars_minute", symbol=symbol, date_range=(session_date, session_date)
+        )
+        if base_bars is None or len(base_bars) == 0:
+            skipped.append((symbol, session_date, "no_bars"))
+            continue
+
+        result, reason = _assemble_from_bars(
             event_row,
+            base_bars,
+            bar_transform=None,
             tp_pct=tp_pct,
             sl_pct=sl_pct,
             lookahead_bars=lookahead_bars,
             sequence_length=sequence_length,
             min_bars=min_bars,
-            read_bars=rb,
             fundamentals_lookup=fundamentals_lookup,
             spy_bars=spy_bars,
         )
@@ -532,27 +622,28 @@ def assemble_dataset(
         parent_list.append(parent_pos)
 
         # --- augmentation (train-only) --------------------------------------
-        if augment and n_augment > 0:
-            _aug_rng = augment_rng if augment_rng is not None else np.random.RandomState()
-            _transforms = bar_transforms if bar_transforms else [lambda df: df]
+        # Empty/missing bar_transforms -> skip augmentation rather than emit
+        # degenerate identity duplicates.
+        if augment and n_augment > 0 and bar_transforms:
             for _ in range(n_augment):
                 # Choose a transform randomly when multiple are provided.
-                if len(_transforms) == 1:
-                    tf = _transforms[0]
+                if len(bar_transforms) == 1:
+                    tf = bar_transforms[0]
                 else:
-                    tf = _transforms[int(_aug_rng.randint(0, len(_transforms)))]
+                    tf = bar_transforms[int(_select_rng.randint(0, len(bar_transforms)))]
 
-                aug_result, _ = _assemble_event_with_reason(
+                # Reuse the bars already read for the ORIGINAL — no extra S3 read.
+                aug_result, _ = _assemble_from_bars(
                     event_row,
+                    base_bars,
+                    bar_transform=tf,
                     tp_pct=tp_pct,
                     sl_pct=sl_pct,
                     lookahead_bars=lookahead_bars,
                     sequence_length=sequence_length,
                     min_bars=min_bars,
-                    read_bars=rb,
                     fundamentals_lookup=fundamentals_lookup,
                     spy_bars=spy_bars,
-                    bar_transform=tf,
                 )
                 if aug_result is None:
                     continue
