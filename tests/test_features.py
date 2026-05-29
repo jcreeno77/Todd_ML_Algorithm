@@ -90,8 +90,8 @@ class TestTemporalFeatures:
             vix_level=sample_static_data["vix_level"],
             sector_etf_return=sample_static_data["sector_etf_return"],
         )
-        assert features.shape[1] == 40, f"Expected 40 1-min features, got {features.shape[1]}"
-        assert len(TEMPORAL_1MIN_FEATURE_NAMES) == 40
+        assert features.shape[1] == 43, f"Expected 43 1-min features, got {features.shape[1]}"
+        assert len(TEMPORAL_1MIN_FEATURE_NAMES) == 43
 
     def test_5min_feature_count(self, sample_5min_bars, sample_static_data):
         features = compute_temporal_features_5min(
@@ -180,6 +180,62 @@ class TestBuildFeatureMatrix:
             static_data=sample_static_data,
             sequence_length=30,
         )
-        assert temporal.shape == (30, 49), f"Expected (30, 49), got {temporal.shape}"
+        assert temporal.shape == (30, 52), f"Expected (30, 52), got {temporal.shape}"
         assert static_cont.shape == (9,)
         assert static_cat.shape == (1,)
+
+
+class TestVolumeFeatures:
+    def test_float_rotation_monotonic(self, sample_1min_bars):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        feats = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        i = TEMPORAL_1MIN_FEATURE_NAMES.index("float_rotation")
+        col = feats[:, i]
+        assert np.all(np.diff(col) >= -1e-6)  # cumulative -> non-decreasing
+        assert col[-1] > 0
+
+    def test_log_dollar_volume_present(self, sample_1min_bars):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        feats = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        i = TEMPORAL_1MIN_FEATURE_NAMES.index("log_dollar_volume")
+        assert np.all(feats[:, i] > 0)
+
+    def test_intraday_rvol_profile_and_fallback(self, sample_1min_bars):
+        from ML_tradingAlgo.tft.features import (
+            compute_temporal_features_1min, TEMPORAL_1MIN_FEATURE_NAMES,
+        )
+        i = TEMPORAL_1MIN_FEATURE_NAMES.index("intraday_rvol")
+        # fallback path (no profile) must still produce finite values
+        feats = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+        )
+        assert np.all(np.isfinite(feats[:, i]))
+        # profile path: a profile of all-1.0 expected volume -> rvol == volume
+        prof = np.ones(390)
+        feats2 = compute_temporal_features_1min(
+            sample_1min_bars, float_shares=1_000_000, avg_volume_20d=500_000,
+            spy_bars=None, vix_level=20.0, sector_etf_return=0.01,
+            intraday_volume_profile=prof,
+        )
+        assert np.all(np.isfinite(feats2[:, i]))
+        # all-1.0 expected volume -> rvol equals raw volume exactly
+        assert np.allclose(feats2[:, i], sample_1min_bars["volume"].to_numpy())
+
+    def test_build_intraday_volume_profile(self):
+        from ML_tradingAlgo.tft.features import build_intraday_volume_profile
+        idx = pd.date_range("2026-05-29 09:30", periods=10, freq="1min", tz="US/Eastern")
+        bars = pd.DataFrame({"volume": np.arange(10) + 1.0}, index=idx)
+        prof = build_intraday_volume_profile([bars])
+        assert len(prof) == 390
+        assert prof[0] == 1.0  # minute 0 -> first bar volume

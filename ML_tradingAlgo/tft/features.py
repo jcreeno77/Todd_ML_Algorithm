@@ -67,6 +67,10 @@ TEMPORAL_1MIN_FEATURE_NAMES: list[str] = [
     # Time encoding (2)
     "tod_sin",
     "tod_cos",
+    # Volume / liquidity (3)
+    "float_rotation",
+    "log_dollar_volume",
+    "intraday_rvol",
 ]
 
 TEMPORAL_5MIN_FEATURE_NAMES: list[str] = [
@@ -184,6 +188,33 @@ def _mfi(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, p
 
 
 # ---------------------------------------------------------------------------
+# Intraday volume profile builder
+# ---------------------------------------------------------------------------
+
+def build_intraday_volume_profile(bars_list, session_minutes: int = 390) -> np.ndarray:
+    """Typical (mean) volume per minute-of-day across many sessions.
+
+    Each element of ``bars_list`` is a 1-min OHLCV frame with a DatetimeIndex.
+    Returns a length-``session_minutes`` array; minutes with no observations
+    fall back to the global mean (or 1.0 if empty).
+    """
+    sums = np.zeros(session_minutes, dtype=float)
+    counts = np.zeros(session_minutes, dtype=float)
+    for bars in bars_list:
+        if not isinstance(bars.index, pd.DatetimeIndex):
+            continue
+        mins = (bars.index.hour * 60 + bars.index.minute - (9 * 60 + 30)).to_numpy()
+        vols = bars["volume"].to_numpy(dtype=float)
+        for m, vol in zip(mins, vols):
+            if 0 <= m < session_minutes:
+                sums[m] += vol
+                counts[m] += 1
+    profile = np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
+    global_mean = np.nanmean(profile) if np.any(counts > 0) else 1.0
+    return np.where(np.isnan(profile), global_mean, profile)
+
+
+# ---------------------------------------------------------------------------
 # Legacy candle pressure
 # ---------------------------------------------------------------------------
 
@@ -236,8 +267,9 @@ def compute_temporal_features_1min(
     spy_bars: Optional[pd.DataFrame],
     vix_level: Optional[float],
     sector_etf_return: Optional[float],
+    intraday_volume_profile: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Compute 38 temporal features per 1-min bar.
+    """Compute temporal features per 1-min bar.
 
     Args:
         bars: DataFrame with columns [open, high, low, close, volume].
@@ -246,9 +278,12 @@ def compute_temporal_features_1min(
         spy_bars: Optional SPY 1-min bars (same length) for market context.
         vix_level: Current VIX level (scalar).
         sector_etf_return: Sector ETF session return (scalar).
+        intraday_volume_profile: Optional length-390 array of typical volume
+            per minute-of-day. When supplied, ``intraday_rvol`` is computed
+            against this profile; otherwise falls back to ``rel_vol``.
 
     Returns:
-        np.ndarray of shape (n_bars, 40).
+        np.ndarray of shape (n_bars, 43).
     """
     # Capture a minute-of-day timeline from the DatetimeIndex if present;
     # otherwise fall back to bar position (assume 1-min spacing from the open).
@@ -313,6 +348,21 @@ def compute_temporal_features_1min(
 
     # OBV slope
     obv_slope = _obv_slope(c, v, window=5).fillna(0)
+
+    # --- Volume / liquidity (3) ---
+    float_safe_v = float_shares if float_shares and float_shares != 0 else 1e-8
+    float_rotation = v.cumsum().astype(float) / float_safe_v
+    log_dollar_volume = np.log1p((c * v).clip(lower=0).astype(float))
+
+    if intraday_volume_profile is not None:
+        prof = np.asarray(intraday_volume_profile, dtype=float)
+        exp_vol = np.array([
+            prof[int(m)] if 0 <= int(m) < len(prof) and prof[int(m)] > 0 else avg_vol_per_min
+            for m in minute_of_day
+        ], dtype=float)
+        intraday_rvol = pd.Series(v.to_numpy(dtype=float) / np.where(exp_vol > 0, exp_vol, 1.0))
+    else:
+        intraday_rvol = rel_vol.copy()
 
     # --- VWAP Dynamics (5) ---
     vwap_dist = (c - vwap_safe) / atr_safe
@@ -422,6 +472,9 @@ def compute_temporal_features_1min(
         TEMPORAL_1MIN_FEATURE_NAMES[37]: legacy["squared"],
         TEMPORAL_1MIN_FEATURE_NAMES[38]: tod_sin,
         TEMPORAL_1MIN_FEATURE_NAMES[39]: tod_cos,
+        "float_rotation": pd.Series(float_rotation),
+        "log_dollar_volume": pd.Series(log_dollar_volume),
+        "intraday_rvol": intraday_rvol.reset_index(drop=True),
     })
 
     # Fill any remaining NaN from warmup periods
@@ -596,11 +649,11 @@ def build_feature_matrix(
 
     Returns:
         Tuple of:
-          - temporal: (sequence_length, 49) — 40 1-min + 9 5-min features
+          - temporal: (sequence_length, 52) — 43 1-min + 9 5-min features
           - static_continuous: (9,)
           - static_categorical: (1,)
     """
-    # Compute 1-min temporal features (38)
+    # Compute 1-min temporal features
     features_1min = compute_temporal_features_1min(
         bars=bars_1min,
         float_shares=static_data["float_shares"],
@@ -608,6 +661,7 @@ def build_feature_matrix(
         spy_bars=static_data.get("spy_bars"),
         vix_level=static_data.get("vix_level"),
         sector_etf_return=static_data.get("sector_etf_return"),
+        intraday_volume_profile=static_data.get("intraday_volume_profile"),
     )
 
     # Compute 5-min temporal features (9)
@@ -629,7 +683,7 @@ def build_feature_matrix(
         idx_5min = min(i // 5, n_5min - 1)
         aligned_5min[i] = features_5min[idx_5min]
 
-    # Concatenate: 38 1-min + 9 5-min = 47 temporal features
+    # Concatenate: 43 1-min + 9 5-min = 52 temporal features
     temporal = np.concatenate([features_1min, aligned_5min], axis=1)
 
     # Take last sequence_length bars
