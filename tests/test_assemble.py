@@ -145,7 +145,7 @@ def test_build_static_data_keys_and_finite():
 
     # compute_static_features must accept the dict without error.
     cont, cat = tft_features.compute_static_features(**static_data)
-    assert cont.shape == (7,)
+    assert cont.shape == (11,)
     assert cat.shape == (1,)
 
     # No None/NaN in the continuous set.
@@ -171,9 +171,9 @@ def test_assemble_event_happy_path():
     )
 
     assert result is not None
-    assert result["temporal"].shape == (30, 47)
+    assert result["temporal"].shape == (30, 69)
     assert result["temporal"].dtype == np.float32
-    assert result["static_continuous"].shape == (7,)
+    assert result["static_continuous"].shape == (11,)
     assert result["static_continuous"].dtype == np.float32
     assert result["static_categorical"].shape == (1,)
     assert result["static_categorical"].dtype == np.int64
@@ -245,8 +245,8 @@ def test_assemble_dataset_stacks_and_skips(monkeypatch):
         sequence_length=30,
     )
 
-    assert out["temporal"].shape == (2, 30, 47)
-    assert out["static_continuous"].shape == (2, 7)
+    assert out["temporal"].shape == (2, 30, 69)
+    assert out["static_continuous"].shape == (2, 11)
     assert out["static_categorical"].shape == (2, 1)
     assert out["y_win"].shape == (2,)
     assert out["y_offset"].shape == (2,)
@@ -257,6 +257,28 @@ def test_assemble_dataset_stacks_and_skips(monkeypatch):
     skipped_symbol, skipped_date, reason = out["skipped"][0]
     assert skipped_symbol == "CCC"
     assert reason == "short_session"
+
+
+# --------------------------------------------------------------------------- #
+# 9. build_static_data includes new keys (Task 5)
+# --------------------------------------------------------------------------- #
+def test_build_static_data_includes_new_keys():
+    from ML_tradingAlgo.data.assemble import build_static_data
+    import pandas as pd
+    bars = pd.DataFrame({
+        "open": [5.0, 5.1], "high": [5.2, 5.2], "low": [4.9, 5.0],
+        "close": [5.1, 5.15], "volume": [10000, 12000],
+    })
+    sd = build_static_data(
+        event_row={"prior_close": 4.0, "float_shares": 1_000_000,
+                   "gap_pct": 0.3, "session_date": "2026-05-29",
+                   "premarket_high": 5.3, "premarket_low": 4.7,
+                   "prior_day_high": 5.0, "prior_day_range": 1.2, "day_of_run": 1},
+        bars_1min=bars, fundamentals_row=None, current_price=5.15,
+    )
+    for key in ["prior_day_high", "prior_day_range", "day_of_run",
+                "session_date", "intraday_volume_profile"]:
+        assert key in sd
 
 
 # --------------------------------------------------------------------------- #

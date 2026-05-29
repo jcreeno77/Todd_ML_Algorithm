@@ -117,9 +117,9 @@ class TestTemporalFeatures:
 class TestStaticFeatures:
     def test_static_feature_count(self, sample_static_data):
         continuous, categorical = compute_static_features(**sample_static_data)
-        assert continuous.shape == (9,)
+        assert continuous.shape == (11,)
         assert categorical.shape == (1,)
-        assert len(STATIC_CONTINUOUS_FEATURE_NAMES) == 9
+        assert len(STATIC_CONTINUOUS_FEATURE_NAMES) == 11
 
     def test_float_is_log_scaled(self, sample_static_data):
         continuous, _ = compute_static_features(**sample_static_data)
@@ -181,7 +181,7 @@ class TestBuildFeatureMatrix:
             sequence_length=30,
         )
         assert temporal.shape == (30, 69), f"Expected (30, 69), got {temporal.shape}"
-        assert static_cont.shape == (9,)
+        assert static_cont.shape == (11,)
         assert static_cat.shape == (1,)
 
 
@@ -364,3 +364,24 @@ class TestStructureFeatures:
         # bars 0,1,2 are new HODs (->0), bar3 (+1), bar4 (+2), bar5 (+3),
         # bar6 is a new HOD (->0).
         np.testing.assert_array_equal(feats[:, i], [0, 0, 0, 1, 2, 3, 0])
+
+
+class TestNewStaticFeatures:
+    def test_static_count_is_11(self):
+        from ML_tradingAlgo.tft.features import STATIC_CONTINUOUS_FEATURE_NAMES
+        assert len(STATIC_CONTINUOUS_FEATURE_NAMES) == 11
+
+    def test_day_of_run_and_gap_vs_range(self, sample_static_data):
+        from ML_tradingAlgo.tft.features import (
+            compute_static_features, STATIC_CONTINUOUS_FEATURE_NAMES,
+        )
+        data = dict(sample_static_data)
+        data.update({"day_of_run": 2, "prior_day_range": 1.0,
+                     "prior_day_high": 5.0, "session_date": "2026-05-29"})
+        cont, _ = compute_static_features(**data)
+        i_run = STATIC_CONTINUOUS_FEATURE_NAMES.index("day_of_run")
+        i_gap = STATIC_CONTINUOUS_FEATURE_NAMES.index("gap_vs_prior_range")
+        assert cont[i_run] == 2.0
+        # gap_vs_prior_range = (current_price - prior_close)/prior_day_range
+        # current_price=5.5, prior_close=4.0, prior_day_range=1.0 -> 1.5
+        assert abs(cont[i_gap] - (5.5 - 4.0) / 1.0) < 1e-6

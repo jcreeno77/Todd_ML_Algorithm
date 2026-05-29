@@ -114,6 +114,8 @@ STATIC_CONTINUOUS_FEATURE_NAMES: list[str] = [
     "premarket_range",
     "dow_sin",
     "dow_cos",
+    "day_of_run",
+    "gap_vs_prior_range",
 ]
 
 
@@ -677,6 +679,9 @@ def compute_static_features(
     current_price: float,
     prior_close: float,
     session_date=None,
+    day_of_run=1,
+    prior_day_range=None,
+    prior_day_high=None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute static features.
@@ -720,6 +725,12 @@ def compute_static_features(
             dow_sin = float(np.sin(angle))
             dow_cos = float(np.cos(angle))
 
+    day_of_run_val = float(day_of_run) if day_of_run is not None else 1.0
+    if prior_day_range and prior_day_range > 0:
+        gap_vs_prior_range = (current_price - prior_close) / prior_day_range
+    else:
+        gap_vs_prior_range = 0.0
+
     continuous = np.array([
         float_log,
         si_ratio,
@@ -730,6 +741,8 @@ def compute_static_features(
         premarket_range,
         dow_sin,
         dow_cos,
+        day_of_run_val,
+        gap_vs_prior_range,
     ], dtype=np.float64)
 
     categorical = np.array([sector_id], dtype=np.int64)

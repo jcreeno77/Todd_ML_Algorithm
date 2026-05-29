@@ -199,6 +199,12 @@ def build_static_data(
         "spy_bars": spy_bars,
         "vix_level": vix_level,
         "sector_etf_return": sector_etf_return,
+        # new Task-5 fields
+        "session_date": event_row.get("session_date"),
+        "prior_day_high": _finite(event_row.get("prior_day_high"), default=prior_close),
+        "prior_day_range": _finite(event_row.get("prior_day_range"), default=0.0),
+        "day_of_run": int(event_row.get("day_of_run") or 1),
+        "intraday_volume_profile": event_row.get("intraday_volume_profile"),
     }
 
 
@@ -234,8 +240,8 @@ def assemble_event(
     Returns a dict::
 
         {
-            "temporal": np.ndarray (sequence_length, 47) float32,
-            "static_continuous": np.ndarray (7,) float32,
+            "temporal": np.ndarray (sequence_length, 69) float32,
+            "static_continuous": np.ndarray (11,) float32,
             "static_categorical": np.ndarray (1,) int64,
             "y_win": float,
             "y_offset": float,
@@ -383,8 +389,8 @@ def assemble_dataset(
     Returns::
 
         {
-            "temporal": (N, 30, 47) float32,
-            "static_continuous": (N, 7) float32,
+            "temporal": (N, 30, 69) float32,
+            "static_continuous": (N, 11) float32,
             "static_categorical": (N, 1) int64,
             "y_win": (N,) float32,
             "y_offset": (N,) float32,
@@ -422,10 +428,30 @@ def assemble_dataset(
     if events is None or len(events) == 0:
         return _empty_dataset(sequence_length)
 
+    # day_of_run: count consecutive prior session_dates for the same symbol.
+    _run_map: dict = {}
+    if events is not None and len(events):
+        ev = events.copy()
+        ev["_d"] = [_to_date(x) for x in ev["session_date"]]
+        for sym, grp in ev.groupby("symbol"):
+            dates = sorted(d for d in grp["_d"] if d is not None)
+            run = 0
+            prev = None
+            for d in dates:
+                if prev is not None and 0 < (d - prev).days <= 4:
+                    run += 1
+                else:
+                    run = 1
+                _run_map[(sym, d)] = run
+                prev = d
+
     for _, event in events.iterrows():
         event_row = event.to_dict()
         symbol = event_row.get("symbol")
         session_date = event_row.get("session_date")
+        event_row["day_of_run"] = _run_map.get(
+            (symbol, _to_date(session_date)), 1
+        )
 
         spy_bars = None
         if spy_lookup is not None:
@@ -514,8 +540,8 @@ def _to_date(value):
 
 def _empty_dataset(sequence_length: int) -> dict:
     return {
-        "temporal": np.empty((0, sequence_length, 47), dtype=np.float32),
-        "static_continuous": np.empty((0, 7), dtype=np.float32),
+        "temporal": np.empty((0, sequence_length, 69), dtype=np.float32),
+        "static_continuous": np.empty((0, 11), dtype=np.float32),
         "static_categorical": np.empty((0, 1), dtype=np.int64),
         "y_win": np.empty((0,), dtype=np.float32),
         "y_offset": np.empty((0,), dtype=np.float32),
