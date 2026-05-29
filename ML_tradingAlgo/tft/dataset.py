@@ -17,9 +17,7 @@ from torch.utils.data import Dataset
 _STD_FLOOR = 1e-8
 
 DEFAULT_AUGMENT_CFG = {
-    "noise_std": 0.001,
-    "time_shift": 2,
-    "feature_dropout": 0.1,
+    "feature_dropout": 0.0,  # bar-level augmentation + mixup now live upstream
 }
 
 
@@ -95,21 +93,17 @@ class TFTDataset(Dataset):
         return self.temporal.shape[0]
 
     def _augment_temporal(self, temporal: np.ndarray) -> np.ndarray:
-        """Apply noise, time roll, and feature dropout to a (30, 69) array."""
+        """Apply optional feature dropout to a (T, F) array.
+
+        Noise and time-roll augmentation have been removed; those transforms now
+        live upstream (bar-level jitter/warp in ``augment.py``) or at the batch
+        level (``mixup_batch`` in the training loop). Only feature-column dropout
+        is retained here, and it defaults to 0.0 (a no-op) so that the overall
+        in-dataset augmentation is off by default.
+        """
         cfg = self.augment_cfg
 
-        noise_std = cfg["noise_std"]
-        if noise_std and noise_std > 0:
-            noise = torch.randn(temporal.shape).numpy().astype(np.float32) * noise_std
-            temporal = temporal + noise
-
-        time_shift = int(cfg["time_shift"])
-        if time_shift > 0:
-            shift = int(torch.randint(-time_shift, time_shift + 1, (1,)).item())
-            if shift != 0:
-                temporal = np.roll(temporal, shift, axis=0)
-
-        feature_dropout = cfg["feature_dropout"]
+        feature_dropout = cfg.get("feature_dropout", 0.0)
         if feature_dropout and feature_dropout > 0:
             num_features = temporal.shape[1]
             keep_mask = (torch.rand(num_features).numpy() >= feature_dropout)

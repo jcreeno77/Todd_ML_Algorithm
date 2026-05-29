@@ -122,7 +122,9 @@ def test_augment_determinism_and_variation():
     a2 = ds_plain[2]["temporal"]
     assert torch.equal(a1, a2)
 
-    # augment=True -> varies between calls (different seed each call).
+    # augment=True with default cfg (feature_dropout=0.0) -> also deterministic
+    # because the default augmentation is a no-op; noise and time-roll have been
+    # removed; bar-level and mixup augmentation now happen upstream/in train loop.
     ds_aug = TFTDataset(
         temporal, static_continuous, static_categorical,
         y_win, y_offset, w, norm_stats=stats, augment=True,
@@ -133,4 +135,14 @@ def test_augment_determinism_and_variation():
     torch.manual_seed(1)
     np.random.seed(1)
     b2 = ds_aug[2]["temporal"].clone()
-    assert not torch.equal(b1, b2)
+    assert torch.equal(b1, b2)
+
+
+def test_dataset_no_longer_injects_noise_or_roll():
+    t = np.random.RandomState(0).randn(3, 30, 69).astype("float32")
+    sc = np.zeros((3, 11), "float32")
+    cat = np.zeros((3, 1), "int64")
+    ds = TFTDataset(t, sc, cat, y_win=np.zeros(3), y_offset=np.zeros(3),
+                    sample_weights=np.ones(3), augment=True)
+    item = ds[0]
+    assert np.allclose(item["temporal"].numpy(), t[0])
