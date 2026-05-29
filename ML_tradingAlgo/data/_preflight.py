@@ -141,6 +141,25 @@ def check_fundamentals() -> bool:
         return False
 
 
+def check_account_hash() -> bool:
+    """Resolve the trading account hash (confirms the trade endpoint is reachable)."""
+    if not os.environ.get("SCHWAB_APP_KEY"):
+        _warn("skipping Schwab account-hash check (no creds)")
+        return True
+    try:
+        from ML_tradingAlgo.data import schwab_trader
+        account_hash = schwab_trader.get_account_hash()
+        if not account_hash:
+            _fail("Schwab returned an empty account hash")
+            return False
+        masked = f"...{account_hash[-4:]}" if len(account_hash) >= 4 else "****"
+        _ok(f"trading account hash resolved (masked: {masked})")
+        return True
+    except Exception as exc:
+        _fail(f"account-hash check failed: {exc!r}")
+        return False
+
+
 def check_movers() -> bool:
     """Confirm Schwab /movers is index-bound (locks the universe design)."""
     if not os.environ.get("SCHWAB_APP_KEY"):
@@ -168,6 +187,7 @@ def main() -> int:
         check_s3_roundtrip(),
         check_schwab_bars(),
         check_fundamentals(),
+        check_account_hash(),
         check_movers(),
     ]
     print()

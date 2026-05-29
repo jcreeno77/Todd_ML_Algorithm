@@ -1,14 +1,9 @@
 import sys
-import requests
 import pandas as pd
-import json
 import os
 import time
 import numpy as np
-import tda
-from tda import auth, client
-from config import TD_AMERITRADE_CLIENT_ID as client_id, BROKERAGE_ACCOUNT_ID
-from TD_Ameritrade_Data import arrange_fundamentals
+import config  # noqa: F401 - imported for the load_dotenv() side-effect (populates os.environ)
 from Todd_tradingAlgo1 import Todd_predict
 
 # Channel-agnostic alerting (Twilio removed). Defaults to logging; POSTs to a
@@ -18,6 +13,15 @@ try:
     from ML_tradingAlgo.data.notify import notify
 except ImportError:  # run with CWD inside ML_tradingAlgo/
     from data.notify import notify
+
+# Schwab data-source / order-execution layer (replaces the dead TD Ameritrade
+# API). Same dual-import idiom as notify above.
+try:
+    from ML_tradingAlgo.data import schwab_client, schwab_trader
+    from ML_tradingAlgo.data.token_health import check_token_freshness
+except ImportError:  # run with CWD inside ML_tradingAlgo/
+    from data import schwab_client, schwab_trader
+    from data.token_health import check_token_freshness
 
 #money to spend per trade
 trade_amount = 25
@@ -40,10 +44,11 @@ except Exception as _tee_exc:  # noqa: BLE001 - never let the tee break trading
 
 def main():
 
-    #all info for OAuth 2.0
-    token_path = 'token.pickle'
-    api_key = client_id
-    redirect_uri = 'http://localhost:8080'
+    # Best-effort Schwab token freshness check; never block startup on failure.
+    try:
+        check_token_freshness(notify=notify)
+    except Exception as _token_exc:  # noqa: BLE001
+        print(f"token freshness check skipped: {_token_exc}")
 
     #All beginning information for creating candles
     ticker = input("Ticker: ")
@@ -55,19 +60,7 @@ def main():
 
 
     #GETS PREVIOUS DAY CLOSE
-    endpointHist = r"https://api.tdameritrade.com/v1/marketdata/{}/pricehistory".format(ticker)
-
-    #define payload
-    payloadHist = {'apikey': client_id, 'periodType': 'day', 'period': '1', 'frequencyType': 'minute', 'frequency': '30', 'needExtendedHoursData' : 'false'} #need to be able to set time period
-
-    #make a request
-    contentHist = requests.get(url = endpointHist, params = payloadHist)
-
-    dataHist = contentHist.json()
-    dataHist = json.dumps(dataHist)
-    stockData = pd.read_json(dataHist)
-
-    previous_day_close = stockData['candles'].iloc[-1]['close']
+    previous_day_close = schwab_client.get_prior_close(ticker)
 
 
     oneMinContent = []
@@ -85,32 +78,24 @@ def main():
     all_FiveMinCandles = []
 
 
-    #Authorizes for live data gathering
-    try:
-        c = auth.client_from_token_file(token_path, api_key)
-    except FileNotFoundError:
-        from selenium import webdriver
-        from chromedriver_py import binary_path # this will get you the path variable
-
-        driver = webdriver.Chrome(executable_path=binary_path)
-        #driver.get("http://www.python.org")
-        assert "Python" in driver.title
-        c = auth.client_from_login_flow(
-            driver, api_key, redirect_uri, token_path)
-
     #Get starting volume
-    r = c.get_quote(ticker)
-    assert r.ok, r.raise_for_status()
-    quote = json.dumps(r.json())
-    stockData = pd.read_json(quote)
-
-    print(stockData[ticker])
-    start_vol = stockData[ticker]['totalVolume']
-    start_vol_5min = stockData[ticker]['totalVolume']
+    q = schwab_client.get_live_quote(ticker)
+    print(q)
+    start_vol = q["total_volume"]
+    start_vol_5min = q["total_volume"]
     ratio_premarketHigh = 0
     ratio_premarketLow = 0
 
-    floatShares = arrange_fundamentals(ticker)[2]
+    #Float lookup from Schwab fundamentals
+    try:
+        _f = schwab_client.get_fundamentals([ticker])
+        _match = _f.loc[_f["symbol"] == ticker, "float_shares"]
+        floatShares = float(_match.iloc[0]) if not _match.empty else None
+    except Exception:
+        floatShares = None
+    if not floatShares:
+        notify("Could not resolve float shares for " + str(ticker) + "; defaulting to 0", level="warning")
+        floatShares = 0
     print(floatShares)
 
     sleep_seconds = 1.4
@@ -125,14 +110,12 @@ def main():
         print("running premarket")
         time.sleep(sleep_seconds)
         try:
-            r = c.get_quote(ticker)
-            quote = json.dumps(r.json())
-            stockData = pd.read_json(quote)
-            print(stockData[ticker]['lastPrice'])
-            stockPrice = stockData[ticker]['lastPrice']
+            q = schwab_client.get_live_quote(ticker)
+            print(q["last_price"])
+            stockPrice = q["last_price"]
 
         except Exception:
-            print("Error. Something wrong in the pandas import. Keep trying?")
+            print("Error. Something wrong in the quote fetch. Keep trying?")
 
         preMarketContent.append(stockPrice)
         preMarketHigh = max(preMarketContent)
@@ -175,14 +158,12 @@ def main():
 
 
         try:
-            r = c.get_quote(ticker)
-            quote = json.dumps(r.json())
-            stockData = pd.read_json(quote)
-            print(stockData[ticker]['lastPrice'])
-            stockPrice = stockData[ticker]['lastPrice']
+            q = schwab_client.get_live_quote(ticker)
+            print(q["last_price"])
+            stockPrice = q["last_price"]
 
         except Exception:
-            print("Error. Something wrong in the pandas import. Keep trying?")
+            print("Error. Something wrong in the quote fetch. Keep trying?")
 
 
 
@@ -200,11 +181,11 @@ def main():
             candle_open = oneMinContent[0]
             candle_close = oneMinContent[-1]
             try:
-                candle_volume = stockData[ticker]['totalVolume'] - start_vol
+                candle_volume = q["total_volume"] - start_vol
             except Exception:
                 print("error getting candle volume")
                 try:
-                    candle_volume = stockData[ticker]['totalVolume'] - start_vol
+                    candle_volume = q["total_volume"] - start_vol
                 except Exception:
                     candle_volume = 1
 
@@ -243,11 +224,11 @@ def main():
             candle_open_5min = fiveMinContent[0]
             candle_close_5min = fiveMinContent[-1]
             try:
-                candle_volume_5min = stockData[ticker]['totalVolume'] - start_vol_5min
+                candle_volume_5min = q["total_volume"] - start_vol_5min
             except Exception:
                 print("failure for 5min, trying again.")
                 try:
-                    candle_volume_5min = stockData[ticker]['totalVolume'] - start_vol_5min
+                    candle_volume_5min = q["total_volume"] - start_vol_5min
                 except Exception:
                     print("failed")
 
@@ -289,8 +270,8 @@ def main():
 
                 #get 52 week data and ratios
                 try:
-                    fiftyTwo_week_high = stockData[ticker]['52WkHigh']
-                    fiftyTwo_week_low = stockData[ticker]['52WkLow']
+                    fiftyTwo_week_high = q["high_52wk"]
+                    fiftyTwo_week_low = q["low_52wk"]
                     high52ratio = 1 - stockPrice / fiftyTwo_week_high
                     low52ratio = 1 - fiftyTwo_week_low / stockPrice
                     stock_data = arrange_from_live(all_FiveMinCandles, all_OneMinCandles, floatShares,high52ratio,low52ratio, ratio_premarketHigh, ratio_premarketLow, daily_high_ratio, daily_low_ratio)
@@ -325,9 +306,7 @@ def main():
                     buy_quantity += buy_remainder
 
                     #places trade
-                    account_id = BROKERAGE_ACCOUNT_ID
-                    x = tda.orders.equities.equity_buy_market(ticker, buy_quantity)
-                    r_place_order = c.place_order(account_id, x)
+                    order_id = schwab_trader.buy_market(ticker, buy_quantity)
 
 
         #All following code pertains to the sell mechanism - includes a trailing stop loss of 1%
@@ -335,12 +314,6 @@ def main():
             stop_loss_set = False
             begin_stoploss_trail = False
             stop_loss_trail = -2.5
-        if bought == True:
-            try:
-                assert r_place_order.ok, r_place_order.raise_for_status()
-                order_id = tda.utils.Utils(client, account_id).extract_order_id(r_place_order)
-            except Exception:
-                print("order did not go through (normally not enough money in account)")
         if bought == True:
             percent_change = (stockPrice - buy_price) / buy_price * 100
             print("percent change")
@@ -385,9 +358,7 @@ def main():
 
             #sell code
             sell_quantity = buy_quantity/2
-            account_id = BROKERAGE_ACCOUNT_ID
-            x = tda.orders.equities.equity_sell_market(ticker, sell_quantity)
-            r_place_order = c.place_order(account_id, x)
+            schwab_trader.sell_market(ticker, sell_quantity)
 
         if sold2 == True and noted2 == False:
             print("profit equals: ", profit)
@@ -402,9 +373,7 @@ def main():
 
             #sell code
             sell_quantity = buy_quantity/2
-            account_id = BROKERAGE_ACCOUNT_ID
-            x = tda.orders.equities.equity_sell_market(ticker, sell_quantity)
-            r_place_order = c.place_order(account_id, x)
+            schwab_trader.sell_market(ticker, sell_quantity)
 
         if sold1 == True and sold2 == True:
             bought = False
