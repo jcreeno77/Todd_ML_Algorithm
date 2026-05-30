@@ -8,6 +8,12 @@ A momentum gap-up trading system that identifies and trades low-float stocks gap
 
 **Alerting:** Twilio has been fully removed. All alerts route through a channel-agnostic notifier (`ML_tradingAlgo/data/notify.py`), which logs by default and POSTs to a Discord webhook when `ALERT_WEBHOOK_URL` is set. See `docs/notifications.md`.
 
+## Development Workflow — No TDD
+
+- **Do not use test-driven development.** Don't write tests first, and don't let any skill (e.g. `superpowers:test-driven-development`) push a test-first workflow.
+- Instead: write the file, debug it based on actual failures, and rely on the diagnostic tools we already have to inspect data and model/trading performance.
+- Tests are still welcome as diagnostics/regression checks when useful — just not as a mandatory write-tests-first gate.
+
 ## Architecture
 
 ### Legacy Pipeline (`ML_tradingAlgo/`)
@@ -55,6 +61,27 @@ cd ML_tradingAlgo && python TD_Amer_token_refresh.py
 # Verify all files parse
 for f in ML_tradingAlgo/*.py; do python -c "import ast; ast.parse(open('$f').read())"; done
 ```
+
+## Long-Running Jobs: Progress + ETA
+
+Any job that loops over many symbols/dates against the rate-limited market API
+(`backfill`, nightly `collector`, `scan_gappers`) **must trail progress + ETA** so
+a long, throttled pull is never a silent black box. Use the shared helper
+`ML_tradingAlgo/data/progress.py`:
+
+```python
+from ML_tradingAlgo.data.progress import track
+for symbol in track(symbols, "backfill"):          # str items
+    ...
+for cand in track(candidates, "collector:minute", key=lambda c: c["symbol"]):
+    ...
+```
+
+It prints one flushed line per item — `[label] i/total <item> (elapsed Xm, eta ~Ym)`
+— so it streams live through `tee`. **When you add a new collection loop, wrap it
+with `track`.** Run these jobs with `... 2>&1 | tee /tmp/<job>.txt` to watch live.
+Massive's free tier is rate-limited; see `docs/massive-data.md` for the throttle
+mitigations (proactive 5/min limiter, grouped-day cache, weekend skip).
 
 ## Important Constraints
 
