@@ -48,11 +48,28 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from ML_tradingAlgo.data import collector, gainers, schwab_client, fundamentals
+from ML_tradingAlgo.data import collector, gainers, fundamentals
+from ML_tradingAlgo.data.progress import track
+
+
+def _market_client():
+    """Select the market-data source via ``DATA_PROVIDER`` (massive | schwab).
+
+    Both modules expose the same surface (get_daily_bars / get_minute_bars /
+    get_fundamentals) returning the same canonical price frame. Massive removes
+    Schwab's ~180-day 1-minute limit and OAuth; defaults to schwab for back-compat.
+    """
+    provider = os.environ.get("DATA_PROVIDER", "schwab").strip().lower()
+    if provider == "massive":
+        from ML_tradingAlgo.data import massive_client
+        return massive_client
+    from ML_tradingAlgo.data import schwab_client
+    return schwab_client
 from ML_tradingAlgo.data.store import (
     read_bars,
     write_bars,
@@ -111,6 +128,7 @@ def backfill_seed(
     end = _to_date(end_date)
     today = _today()
     cutoff = today - dt.timedelta(days=minute_cutoff_days)
+    market = _market_client()
 
     # 1. Seed the universe so these symbols are "known".
     gainers.seed_from_manual(symbols, session_date=start)
@@ -119,20 +137,20 @@ def backfill_seed(
     n_minute_unavailable = 0
     detected_at = pd.Timestamp.now(tz="UTC")
 
-    for symbol in symbols:
+    for symbol in track(symbols, "backfill"):
         # --- resume: skip symbols already processed through end_date -------- #
         watermark = get_watermark(DAILY_TABLE, symbol)
         if watermark is not None and _to_date(watermark) >= end:
             continue
 
         # --- ONE daily pull per symbol for the whole window ---------------- #
-        daily = schwab_client.get_daily_bars(symbol, start, end)
+        daily = market.get_daily_bars(symbol, start, end)
         if daily is not None and len(daily):
             write_bars(daily, table=DAILY_TABLE,
                        partition_cols=["symbol", "session_date"])
 
         # --- refresh fundamentals snapshot (once per symbol) --------------- #
-        schwab_fund = schwab_client.get_fundamentals([symbol])
+        schwab_fund = market.get_fundamentals([symbol])
         schwab_fields = {}
         if schwab_fund is not None and len(schwab_fund):
             m = schwab_fund[schwab_fund["symbol"] == symbol]
@@ -174,7 +192,7 @@ def backfill_seed(
             if within_cutoff:
                 day_start = dt.datetime.combine(event_date, dt.time(0, 0))
                 day_end = dt.datetime.combine(event_date, dt.time(23, 59))
-                minute = schwab_client.get_minute_bars(
+                minute = market.get_minute_bars(
                     symbol, day_start, day_end, extended_hours=True
                 )
                 if minute is not None and len(minute):

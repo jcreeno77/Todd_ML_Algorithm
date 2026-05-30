@@ -132,6 +132,12 @@ def patched_externals(monkeypatch):
     today = dt.date(2026, 5, 29)  # matches the prompt's "today"
     monkeypatch.setattr(backfill, "_today", lambda: today)
 
+    # Pin the data provider so the CLI path (which calls load_dotenv) can't pick
+    # up a developer's DATA_PROVIDER=massive and hit the live API. load_dotenv
+    # uses override=False, so this monkeypatched value survives. The schwab path
+    # is the one mocked below.
+    monkeypatch.setenv("DATA_PROVIDER", "schwab")
+
     # Compact window keeps moto I/O fast; a small minute_cutoff_days (passed by
     # the tests) is what separates "recent" from "old".
     recent_event = today - dt.timedelta(days=2)
