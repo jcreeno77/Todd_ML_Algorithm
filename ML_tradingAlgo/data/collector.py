@@ -50,6 +50,7 @@ from ML_tradingAlgo.data.store import (
 from ML_tradingAlgo.data import schwab_client
 from ML_tradingAlgo.data import gainers
 from ML_tradingAlgo.data import fundamentals
+from ML_tradingAlgo.data.progress import track
 
 __all__ = [
     "EventDecision",
@@ -298,7 +299,7 @@ def run_nightly(asof_date) -> dict:
     pulled_daily: dict[str, pd.DataFrame] = {}
 
     # --- Pass 1: coarse on daily bars ------------------------------------ #
-    for symbol in symbols:
+    for symbol in track(symbols, "collector:daily"):
         watermark = get_watermark(DAILY_TABLE, symbol)
         if watermark is not None:
             start = _to_date(watermark) - dt.timedelta(days=1)
@@ -350,7 +351,7 @@ def run_nightly(asof_date) -> dict:
     detected_at = pd.Timestamp.now(tz="UTC")
     n_events_passed = 0
 
-    for cand in candidates:
+    for cand in track(candidates, "collector:minute", key=lambda c: c["symbol"]):
         symbol = cand["symbol"]
         start = dt.datetime.combine(asof, dt.time(0, 0))
         end = dt.datetime.combine(asof, dt.time(23, 59))
