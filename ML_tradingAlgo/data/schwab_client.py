@@ -36,6 +36,7 @@ __all__ = [
     "get_daily_bars",
     "get_fundamentals",
     "get_quote_snapshot",
+    "get_movers",
     "get_live_quote",
     "get_prior_close",
 ]
@@ -56,8 +57,23 @@ PRICE_COLUMNS = [
     "source",
 ]
 
+MOVERS_COLUMNS = [
+    "symbol",
+    "description",
+    "last_price",
+    "net_change",
+    "net_pct_change",
+    "volume",
+    "total_volume",
+    "trades",
+    "market_share",
+    "ts",
+    "source",
+]
+
 _PRICE_SOURCE = "schwab_pricehistory"
 _FUNDAMENTAL_SOURCE = "schwab_fundamental"
+_MOVERS_SOURCE = "schwab_movers"
 
 # Module-level cached client.
 _CLIENT = None
@@ -275,6 +291,87 @@ def get_quote_snapshot(symbols: list[str]) -> pd.DataFrame:
         rows,
         columns=["symbol", "last_price", "bid", "ask", "total_volume", "ts"],
     )
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    return df
+
+
+# --------------------------------------------------------------------------- #
+# Public API: market movers (screener)
+# --------------------------------------------------------------------------- #
+def _resolve_movers_enum(value, enum_cls):
+    """Accept an enum member, its NAME (``"EQUITY_ALL"``) or VALUE and return
+    the matching member. ``None`` passes through (Schwab treats it as default).
+    """
+    if value is None or isinstance(value, enum_cls):
+        return value
+    try:
+        return enum_cls[value]  # by NAME
+    except (KeyError, TypeError):
+        return enum_cls(value)  # by VALUE
+
+
+def get_movers(
+    index: str = "EQUITY_ALL",
+    sort_order: str = "PERCENT_CHANGE_UP",
+    frequency=None,
+) -> pd.DataFrame:
+    """Top market movers for ``index`` as a canonical screener frame.
+
+    A *live snapshot* (not historical) of the biggest movers Schwab tracks for
+    the given index -- e.g. the default ``EQUITY_ALL`` sorted by
+    ``PERCENT_CHANGE_UP`` surfaces the session's strongest gainers across all
+    equities. Schwab returns at most a few dozen rows, so this is a discovery
+    signal to seed the universe, NOT a full-universe scan (see
+    ``scan_gappers`` for the market-wide grouped-daily screen).
+
+    ``net_pct_change`` is the *intraday* percent change (as a fraction), which
+    is NOT the open-vs-prior-close gap the backfill coarse screen uses -- treat
+    it as a proxy and re-screen survivors before trusting them as gappers.
+
+    ``index`` / ``sort_order`` accept either the ``Client.Movers`` enum members
+    or their string names; ``frequency`` accepts the enum, its int value, or
+    ``None`` (Schwab default).
+    """
+    client = _get_client()
+    index = _resolve_movers_enum(index, Client.Movers.Index)
+    sort_order = _resolve_movers_enum(sort_order, Client.Movers.SortOrder)
+    frequency = _resolve_movers_enum(frequency, Client.Movers.Frequency)
+
+    kwargs = {}
+    if sort_order is not None:
+        kwargs["sort_order"] = sort_order
+    if frequency is not None:
+        kwargs["frequency"] = frequency
+
+    response = _request_with_retry(client.get_movers, index, **kwargs)
+    payload = response.json() or {}
+    screeners = payload.get("screeners", []) if isinstance(payload, dict) else []
+
+    now = pd.Timestamp.now(tz="UTC")
+    rows = []
+    for item in screeners:
+        # Schwab's documented keys, with legacy/alt fallbacks for robustness
+        # (verified against the docs; not yet against a live token).
+        pct = item.get("netPercentChange")
+        if pct is None:
+            pct = item.get("netPercentChangeInDouble")  # legacy TDA name
+        rows.append(
+            {
+                "symbol": item.get("symbol"),
+                "description": item.get("description"),
+                "last_price": item.get("lastPrice", item.get("last")),
+                "net_change": item.get("netChange", item.get("change")),
+                "net_pct_change": pct,
+                "volume": item.get("volume"),
+                "total_volume": item.get("totalVolume"),
+                "trades": item.get("trades"),
+                "market_share": item.get("marketShare"),
+                "ts": now,
+                "source": _MOVERS_SOURCE,
+            }
+        )
+
+    df = pd.DataFrame(rows, columns=MOVERS_COLUMNS)
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     return df
 

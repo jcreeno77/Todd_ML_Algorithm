@@ -106,6 +106,34 @@ def fake_client():
             }
         }
     )
+    client.get_movers.return_value = FakeResponse(
+        {
+            "screeners": [
+                {
+                    "symbol": "GAPR",
+                    "description": "Gapper Inc",
+                    "lastPrice": 4.20,
+                    "netChange": 1.40,
+                    "netPercentChange": 0.50,  # +50% intraday (fraction)
+                    "volume": 8_000_000,
+                    "totalVolume": 9_000_000,
+                    "trades": 1234,
+                    "marketShare": 0.12,
+                },
+                {
+                    "symbol": "RUNR",
+                    "description": "Runner Corp",
+                    "lastPrice": 12.00,
+                    "netChange": 3.00,
+                    "netPercentChange": 0.33,
+                    "volume": 4_000_000,
+                    "totalVolume": 5_000_000,
+                    "trades": 567,
+                    "marketShare": 0.07,
+                },
+            ]
+        }
+    )
     return client
 
 
@@ -432,6 +460,112 @@ def test_prior_close_returns_last_daily_close(patch_client, monkeypatch):
     monkeypatch.setattr(schwab_client, "get_daily_bars", lambda *a, **k: frame)
     assert schwab_client.get_prior_close("AAPL") == 205.5
     assert isinstance(schwab_client.get_prior_close("AAPL"), float)
+
+
+# --------------------------------------------------------------------------- #
+# get_movers
+# --------------------------------------------------------------------------- #
+MOVERS_COLS = [
+    "symbol",
+    "description",
+    "last_price",
+    "net_change",
+    "net_pct_change",
+    "volume",
+    "total_volume",
+    "trades",
+    "market_share",
+    "ts",
+    "source",
+]
+
+
+def test_movers_schema_exact(patch_client):
+    df = schwab_client.get_movers()
+    assert list(df.columns) == MOVERS_COLS
+
+
+def test_movers_values_and_source(patch_client):
+    df = schwab_client.get_movers().set_index("symbol")
+    top = df.loc["GAPR"]
+    assert top["last_price"] == 4.20
+    assert top["net_change"] == 1.40
+    assert top["net_pct_change"] == 0.50
+    assert top["volume"] == 8_000_000
+    assert top["total_volume"] == 9_000_000
+    assert top["trades"] == 1234
+    assert top["market_share"] == 0.12
+    assert top["source"] == "schwab_movers"
+
+
+def test_movers_ts_is_utc(patch_client):
+    df = schwab_client.get_movers()
+    assert str(df["ts"].dt.tz) == "UTC"
+    assert df["ts"].iloc[0].tzinfo is not None
+
+
+def test_movers_default_index_and_sort_resolved_to_enums(patch_client):
+    """String defaults must be resolved to the Schwab enum members."""
+    from schwab.client import Client
+
+    schwab_client.get_movers()
+    args, kwargs = patch_client.get_movers.call_args
+    assert args[0] == Client.Movers.Index.EQUITY_ALL
+    assert kwargs["sort_order"] == Client.Movers.SortOrder.PERCENT_CHANGE_UP
+    # frequency omitted (None) -> not forwarded, Schwab uses its default
+    assert "frequency" not in kwargs
+
+
+def test_movers_accepts_enum_members_directly(patch_client):
+    from schwab.client import Client
+
+    schwab_client.get_movers(
+        index=Client.Movers.Index.NASDAQ,
+        sort_order=Client.Movers.SortOrder.VOLUME,
+        frequency=Client.Movers.Frequency.FIVE,
+    )
+    args, kwargs = patch_client.get_movers.call_args
+    assert args[0] == Client.Movers.Index.NASDAQ
+    assert kwargs["sort_order"] == Client.Movers.SortOrder.VOLUME
+    assert kwargs["frequency"] == Client.Movers.Frequency.FIVE
+
+
+def test_movers_frequency_int_resolved_to_enum(patch_client):
+    from schwab.client import Client
+
+    schwab_client.get_movers(frequency=5)
+    _, kwargs = patch_client.get_movers.call_args
+    assert kwargs["frequency"] == Client.Movers.Frequency.FIVE
+
+
+def test_movers_legacy_field_fallbacks(patch_client):
+    """Older TDA-style keys (last / change / netPercentChangeInDouble) parse."""
+    patch_client.get_movers.return_value = FakeResponse(
+        {
+            "screeners": [
+                {
+                    "symbol": "OLD",
+                    "description": "Legacy Shape",
+                    "last": 7.5,
+                    "change": 2.5,
+                    "netPercentChangeInDouble": 0.25,
+                    "volume": 100,
+                    "totalVolume": 200,
+                }
+            ]
+        }
+    )
+    row = schwab_client.get_movers().iloc[0]
+    assert row["last_price"] == 7.5
+    assert row["net_change"] == 2.5
+    assert row["net_pct_change"] == 0.25
+
+
+def test_movers_empty_payload(patch_client):
+    patch_client.get_movers.return_value = FakeResponse({})
+    df = schwab_client.get_movers()
+    assert list(df.columns) == MOVERS_COLS
+    assert len(df) == 0
 
 
 # --------------------------------------------------------------------------- #
